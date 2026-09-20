@@ -1,0 +1,72 @@
+name: Release (PC 설치 파일)
+# v* 태그를 푸시하면 Windows / macOS / Linux 설치 파일을 빌드해 GitHub Release 에 첨부합니다.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '릴리스 태그 (예: v1.0.0)'
+        required: true
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+          - os: macos-latest
+            target: --mac
+          - os: ubuntu-latest
+            target: --linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --no-audit --no-fund
+      - name: Test
+        run: npm test
+        env: { ALPHAMAN_AI: off }
+      - name: Build installer
+        run: npx electron-builder ${{ matrix.target }} --publish never
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: AlphaMan ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            ## AlphaMan 프로그램(PC) 버전
+
+            | 운영체제 | 파일 |
+            |---|---|
+            | Windows | `AlphaMan-*-win-x64.exe` (설치형), `AlphaMan-*-win-x64-portable.exe` (무설치) |
+            | macOS | `AlphaMan-*-mac-*.dmg` / `.zip` (서명되지 않은 앱: 처음 실행 시 우클릭 → 열기) |
+            | Linux | `AlphaMan-*-linux-x86_64.AppImage`, `.deb` |
+
+            웹사이트 버전과 같은 기능에 컴퓨터/USB 영상 직접 열기, 로컬 ffmpeg/Whisper 렌더링, 트레이 알림이 추가됩니다.
+            관리자 계정: `hhudeu66@gmail.com` (초기 비밀번호는 README 참고)

@@ -16,10 +16,11 @@ export function createApp(opts = {}) {
   return new AlphaMan(opts);
 }
 
-export function createHttpServer(app, { webDir = DEFAULT_WEB_DIR } = {}) {
+// 요청 핸들러: Node http 서버와 서버리스(Vercel 등) 양쪽에서 동일하게 사용
+export function createRequestHandler(app, { webDir = DEFAULT_WEB_DIR } = {}) {
   const api = buildApi(app);
 
-  return http.createServer(async (req, res) => {
+  return async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const started = Date.now();
     res.setHeader('X-AlphaMan-Platform', app.platform);
@@ -61,7 +62,11 @@ export function createHttpServer(app, { webDir = DEFAULT_WEB_DIR } = {}) {
     } finally {
       if (process.env.ALPHAMAN_LOG) console.log(`${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - started}ms`);
     }
-  });
+  };
+}
+
+export function createHttpServer(app, opts = {}) {
+  return http.createServer(createRequestHandler(app, opts));
 }
 
 export async function startServer({ port = 4100, host = '127.0.0.1', dataDir, platform = 'web', webDir } = {}) {
@@ -90,6 +95,9 @@ function bearer(req) {
 }
 
 function readBody(req) {
+  if (Buffer.isBuffer(req.body)) return Promise.resolve(req.body); // 서버리스 런타임이 이미 본문을 읽은 경우
+  if (typeof req.body === 'string') return Promise.resolve(Buffer.from(req.body));
+  if (req.body && typeof req.body === 'object' && !req.readable) return Promise.resolve(Buffer.from(JSON.stringify(req.body)));
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
     req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { reject(new ApiError(413, '파일이 너무 큽니다 (최대 2GB).')); req.destroy(); } else chunks.push(c); });
