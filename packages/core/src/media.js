@@ -118,7 +118,7 @@ export async function fetchYoutubeMeta(videoId) {
     try {
       const out = await run('yt-dlp', ['-J', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`]);
       const j = JSON.parse(out);
-      return { title: j.title, durationSec: j.duration, channel: j.uploader || j.channel, thumbnail: j.thumbnail, source: 'yt-dlp', language: j.language || 'ko' };
+      return { title: j.title, durationSec: j.duration, channel: j.uploader || j.channel, thumbnail: j.thumbnail, source: 'yt-dlp', language: j.language || 'ko', chapters: (j.chapters || []).map((c) => ({ start: c.start_time, end: c.end_time, title: c.title })), tags: j.tags || [], description: j.description || '' };
     } catch { /* fallthrough */ }
   }
   try {

@@ -228,6 +228,16 @@ test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타�
   const done = await waitFor(() => { const j = a.store.get('remixJobs', job.id); return j.status === 'done' ? j : null; }, 8000);
   const r = done.result;
   assert.ok(r.styleProfile && r.styleProfile.pacing);
+  // 참고 영상 구조를 따라 섹션 카드와 구간 길이 비율이 반영된다
+  assert.ok(Array.isArray(r.styleProfile.segmentPattern) && Math.abs(r.styleProfile.segmentPattern.reduce((a, b) => a + b, 0) - 1) < 0.02);
+  assert.ok(r.timeline.some((t) => t.kind === 'card' && r.styleProfile.structure.includes(t.title)));
+  assert.ok(r.timeline.some((t) => t.section));
+  assert.ok(r.mirroredFromReference.includes('segmentPattern'));
+  // 쇼츠를 참고 영상으로 주면 비율이 자동으로 9:16
+  const refShort = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', referenceUrl: 'https://www.youtube.com/shorts/qqqqqqqqqqq', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 300 } });
+  const rsDone = await waitFor(() => { const j = a.store.get('remixJobs', refShort.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.equal(rsDone.result.ratio, '9:16');
+  assert.equal(rsDone.result.styleProfile.reference.isShorts, true);
   assert.ok(r.finalDurationSec >= 60 && r.finalDurationSec <= 28 * 60);
   assert.ok(Math.abs(r.finalDurationSec - 180) <= 30, `목표 3분 근처여야 함: ${r.finalDurationSec}`);
   assert.ok(r.plan.keep.length > 0);
