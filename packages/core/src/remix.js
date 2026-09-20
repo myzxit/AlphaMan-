@@ -1,0 +1,331 @@
+// AI 재구성(리믹스): 영상 링크 또는 파일 하나만 넣으면 원본의 자막·효과음·배경음을 걷어내고, 1~28분 목표 길이로 다시 구성한 뒤
+// AI 가 새 자막·효과음·배경음·내레이션(내 목소리 TTS)을 입혀 새로운 편집본을 만든다. 참고 유튜브 영상을 지정하면 그 영상의
+// 구성·호흡·자막 스타일을 분석해 같은 방식으로 재구성한다.
+// 사용 범위: 본인이 권리를 가진 영상(직접 촬영·제작했거나 사용 허가를 받은 영상)에 한하며, 작업 생성 시 권리 확인이 필요하다.
+import path from 'node:path';
+import fs from 'node:fs';
+import { ApiError } from './errors.js';
+import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run } from './media.js';
+import { transcribe, semanticSplit } from './subtitles/stt.js';
+import { toASS } from './subtitles/format.js';
+import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
+
+export const REMIX_LIMITS = Object.freeze({ minMinutes: 1, maxMinutes: 28 });
+
+export const REMIX_DEFAULTS = Object.freeze({
+  targetMinutes: 5,            // 1 ~ 28
+  removeBurnedSubtitles: true, // 원본에 박힌 자막 제거 (크롭/인페인팅)
+  removeSfx: true,             // 원본 효과음 제거 (음원 분리 후 효과음 트랙 제외)
+  removeBgm: true,             // 원본 배경음악 제거
+  keepOriginalVoice: true,     // 원본 목소리는 유지 (내레이션 모드에서는 false 로 두면 전체 더빙)
+  newSubtitles: true,          // 새 자막 (템플릿)
+  newSfx: true,                // 새 효과음 큐
+  newBgm: true,                // 새 배경음악
+  narration: 'none',           // none | intro | full  (내 목소리 TTS 내레이션)
+  voiceProfileId: null,
+  template: 'auto',
+  ratio: '16:9',
+  language: 'ko',
+  pacing: 'auto',              // auto | slow | normal | fast  (참고 영상이 있으면 거기서 추정)
+  reorder: true,               // 구조 재배열 (후킹 → 본문 → 마무리)
+  colorGrade: 'auto',
+  transitions: 'auto',
+});
+
+const SFX_LIBRARY = ['whoosh', 'pop', 'ding', 'boom', 'click', 'riser', 'swoosh', 'sparkle', 'thud', 'record-scratch'];
+const BGM_LIBRARY = { education: 'lofi-focus', interview: 'warm-acoustic', info: 'upbeat-corporate', gaming: 'edm-drive', vlog: 'sunny-pop' };
+
+export class RemixEngine {
+  constructor({ store, credits, ai, translate, voice, notifications, outputDir }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.notifications = notifications; this.outputDir = outputDir;
+    this.speed = Number(process.env.ALPHAMAN_JOB_SPEED || 1);
+  }
+
+  defaults() { return { ...REMIX_DEFAULTS, limits: REMIX_LIMITS, templates: TEMPLATES.map((t) => ({ id: t.id, name: t.name })), sfx: SFX_LIBRARY, bgm: BGM_LIBRARY }; }
+
+  // ---- 작업 생성 (링크 또는 파일 중 하나) ----
+  async create(userId, { url, uploadId, localPath, referenceUrl = null, options = {}, rightsConfirmed = false }) {
+    if (!rightsConfirmed) throw new ApiError(400, '재구성할 권리가 있는 영상(직접 제작했거나 사용 허가를 받은 영상)인지 확인해주세요.');
+    const opts = { ...REMIX_DEFAULTS, ...options };
+    const target = Number(opts.targetMinutes);
+    if (!(target >= REMIX_LIMITS.minMinutes && target <= REMIX_LIMITS.maxMinutes)) throw new ApiError(400, `목표 길이는 ${REMIX_LIMITS.minMinutes}~${REMIX_LIMITS.maxMinutes}분 사이여야 합니다.`);
+    if (!['none', 'intro', 'full'].includes(opts.narration)) throw new ApiError(400, '내레이션 모드가 올바르지 않습니다.');
+    if (opts.narration !== 'none') { if (!opts.voiceProfileId) throw new ApiError(400, '내레이션에 사용할 음성 프로필을 선택해주세요.'); this.voice.get(userId, opts.voiceProfileId); }
+
+    let source;
+    if (uploadId) {
+      const up = this.store.get('uploads', uploadId);
+      if (!up || up.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+      const meta = await probe(up.path);
+      validateVideoMeta({ filename: up.filename, mimeType: up.mimeType, ...meta });
+      source = { type: 'file', uploadId, path: up.path, title: path.parse(up.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height };
+    } else if (localPath) {
+      const meta = await probe(localPath);
+      validateVideoMeta({ filename: path.basename(localPath), ...meta });
+      source = { type: 'local', path: localPath, title: path.parse(localPath).name, durationSec: meta.durationSec, width: meta.width, height: meta.height };
+    } else if (url) {
+      const yt = parseYoutubeUrl(url);
+      const meta = await fetchYoutubeMeta(yt.id);
+      source = { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec: meta.durationSec || Number(options.estimatedDurationSec) || 600 };
+    } else throw new ApiError(400, '영상 링크 또는 파일 중 하나를 올려주세요.');
+
+    let reference = null;
+    if (referenceUrl) {
+      const ref = parseYoutubeUrl(referenceUrl);
+      const meta = await fetchYoutubeMeta(ref.id);
+      reference = { url: ref.url, videoId: ref.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec: meta.durationSec || null };
+    }
+
+    const minutes = Math.max(0.5, Math.round((source.durationSec / 60) * 100) / 100);
+    const job = this.store.insert('remixJobs', {
+      userId, source, reference, options: opts, minutesCharged: minutes, rightsConfirmedAt: new Date().toISOString(),
+      status: 'queued', step: 'queued', progress: 0, log: [], result: null, error: null,
+    });
+    this.credits.charge(userId, minutes, `AI 재구성: ${source.title}`, { jobId: job.id });
+    const t = setTimeout(() => this._run(job.id).catch((err) => this._fail(job.id, err)), 10);
+    if (t.unref) t.unref();
+    return job;
+  }
+
+  _log(jobId, step, progress, message) {
+    this.store.update('remixJobs', jobId, (j) => ({ step, status: step === 'done' ? 'done' : 'processing', progress, log: [...j.log, { at: new Date().toISOString(), step, message }] }));
+  }
+  _wait(ms) { return new Promise((r) => { const t = setTimeout(r, Math.max(0, ms / this.speed)); if (t.unref) t.unref(); }); }
+
+  _fail(jobId, err) {
+    console.error('[remix] 작업 실패', jobId, err);
+    const job = this.store.update('remixJobs', jobId, (j) => ({ status: 'failed', error: err.message, log: [...j.log, { at: new Date().toISOString(), step: 'failed', message: err.message }] }));
+    if (job) { this.credits.grant(job.userId, job.minutesCharged, '재구성 실패 환불', { jobId }); this.notifications?.push(job.userId, { type: 'remix.failed', title: 'AI 재구성 실패', body: err.message }); }
+  }
+
+  // ---- 파이프라인 ----
+  async _run(jobId) {
+    const job = this.store.get('remixJobs', jobId);
+    const { source, options: opts } = job;
+
+    this._log(jobId, 'ingest', 6, source.type === 'youtube' ? '원본 영상을 가져오는 중' : '원본 파일을 준비하는 중');
+    await this._wait(300);
+
+    let styleProfile = null;
+    if (job.reference) {
+      this._log(jobId, 'reference', 14, `참고 영상 분석 중: ${job.reference.title}`);
+      styleProfile = await this.analyzeReference(job.reference, opts);
+      await this._wait(300);
+    }
+
+    this._log(jobId, 'transcribing', 26, '원본 음성을 인식해 대본을 만드는 중');
+    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: opts.language, title: source.title });
+    const genre = detectGenre(source.title, stt.segments.map((s) => s.text).join(' '));
+    await this._wait(300);
+
+    this._log(jobId, 'cleaning', 40, `원본 정리 중 (${[opts.removeBurnedSubtitles && '박힌 자막 제거', opts.removeSfx && '효과음 제거', opts.removeBgm && '배경음 제거'].filter(Boolean).join(', ') || '원본 유지'})`);
+    const cleaning = this.planCleaning(source, opts);
+    await this._wait(300);
+
+    this._log(jobId, 'planning', 55, `AI 가 ${opts.targetMinutes}분 구성을 짜는 중`);
+    const plan = await this.planStructure({ segments: stt.segments, source, opts, genre, styleProfile });
+    await this._wait(300);
+
+    this._log(jobId, 'rebuilding', 72, '새 자막·효과음·배경음·내레이션을 입히는 중');
+    const rebuild = await this.rebuild({ job, plan, segments: stt.segments, genre, styleProfile });
+    await this._wait(300);
+
+    this._log(jobId, 'rendering', 88, '렌더링 중');
+    const render = await this.render({ job, plan, rebuild, cleaning });
+
+    const result = {
+      genre, styleProfile, cleaning, plan, ...rebuild, render, transcriptEngine: stt.engine,
+      originalDurationSec: source.durationSec, targetDurationSec: opts.targetMinutes * 60, finalDurationSec: plan.finalDurationSec,
+      summary: `${Math.round(source.durationSec / 60)}분 원본 → ${Math.round(plan.finalDurationSec / 60)}분 재구성 · 구간 ${plan.keep.length}개 · 자막 ${rebuild.subtitles.length}줄 · 효과음 ${rebuild.sfx.length}개${rebuild.narration ? ` · 내레이션 ${rebuild.narration.lines.length}줄` : ''}`,
+    };
+    this.store.update('remixJobs', jobId, { result });
+    this._log(jobId, 'done', 100, '재구성 완료');
+    this.store.update('remixJobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
+    this.notifications?.push(job.userId, { type: 'remix.done', title: 'AI 재구성 완료', body: result.summary, link: `#/remix/${jobId}` });
+  }
+
+  // 참고 영상 → 스타일 프로필 (호흡, 자막 스타일, 구조, 톤). AI 사용 가능 시 제목/채널/길이 기반 추정, 아니면 규칙 기반.
+  async analyzeReference(reference, opts) {
+    const fallback = () => {
+      const dur = reference.durationSec || 480;
+      const pacing = dur < 180 ? 'fast' : dur < 900 ? 'normal' : 'slow';
+      const t = `${reference.title}`.toLowerCase();
+      return {
+        pacing, avgShotSec: pacing === 'fast' ? 2.5 : pacing === 'normal' ? 4.5 : 7,
+        subtitleStyle: /브이로그|vlog|여행/.test(t) ? 'vlog-soft' : /게임|game/.test(t) ? 'gamer-neon' : /리뷰|정보|주식|review/.test(t) ? 'news-ticker' : 'clean-bold',
+        structure: ['0-10초 후킹(결론 먼저)', '문제 제기', '핵심 3가지', '사례/증거', '마무리·구독 유도'],
+        tone: /ㅋㅋ|웃긴|개그|밈/.test(t) ? 'humorous' : /분석|이유|정리/.test(t) ? 'analytical' : 'friendly',
+        sfxDensity: pacing === 'fast' ? 'high' : 'medium', bgm: 'upbeat-corporate', transitions: pacing === 'fast' ? 'hard-cut' : 'crossfade', colorGrade: 'clean-bright', hookType: 'question',
+      };
+    };
+    const res = await this.ai.complete({
+      system: '유튜브 편집 스타일 분석가입니다. 참고 영상의 제목·채널·길이를 보고 편집 스타일 프로필을 JSON 으로만 답합니다.',
+      prompt: `제목: ${reference.title}\n채널: ${reference.channel}\n길이: ${reference.durationSec || '알 수 없음'}초\n\n형식: {"pacing":"slow|normal|fast","avgShotSec":초,"subtitleStyle":"${TEMPLATES.map((t) => t.id).join('|')}","structure":["..."],"tone":"","sfxDensity":"low|medium|high","bgm":"","transitions":"","colorGrade":"","hookType":""}`,
+      json: true, maxTokens: 2000, fallback,
+    });
+    const profile = res && typeof res === 'object' && !Array.isArray(res) ? { ...fallback(), ...res } : fallback();
+    if (!TEMPLATES.some((t) => t.id === profile.subtitleStyle)) profile.subtitleStyle = fallback().subtitleStyle;
+    return { ...profile, reference, engine: this.ai.lastMode };
+  }
+
+  planCleaning(source, opts) {
+    const steps = [];
+    if (opts.removeBurnedSubtitles) steps.push({ id: 'burned-subtitles', method: which('ffmpeg') ? 'crop+delogo' : 'plan', region: { x: 0, y: 0.78, w: 1, h: 0.18 }, note: '하단 자막 영역을 감지해 크롭/인페인팅으로 제거' });
+    if (opts.removeSfx || opts.removeBgm) steps.push({ id: 'audio-separation', method: which('demucs') ? 'demucs' : 'plan', keep: opts.keepOriginalVoice ? ['vocals'] : [], drop: [opts.removeSfx && 'other', opts.removeBgm && 'drums', opts.removeBgm && 'bass'].filter(Boolean), note: '음원 분리 후 목소리만 남기고 효과음·배경음 트랙 제외' });
+    steps.push({ id: 'normalize', method: 'loudnorm', targetLUFS: -14 });
+    return { steps, engine: steps.some((s) => s.method !== 'plan') ? 'ffmpeg' : 'plan' };
+  }
+
+  // 구조 재배열 + 길이 맞추기: 목표 길이 안에 들어가도록 세그먼트를 고르고, 후킹→본문→마무리 순서로 재배치
+  async planStructure({ segments, source, opts, genre, styleProfile }) {
+    const targetSec = Number(opts.targetMinutes) * 60;
+    const pacing = opts.pacing === 'auto' ? (styleProfile?.pacing || 'normal') : opts.pacing;
+    const heuristic = () => {
+      const KEY = /핵심|비밀|놀라|반전|절반|실수|중요|결과|꼭|처음|마지막|사실|진짜|충격|방법|이유/;
+      const scored = segments.map((s, i) => ({ s, i, score: 50 + (KEY.test(s.text) ? 30 : 0) + Math.min(15, s.text.length / 4) + (i < 3 ? 10 : 0) + (i > segments.length - 4 ? 8 : 0) }));
+      if (source.durationSec <= targetSec) return { keep: segments.map((s) => ({ start: s.start, end: s.end, reason: '원본 길이가 목표 이하 - 전체 유지' })), hook: segments[0]?.text || source.title };
+      const sorted = [...scored].sort((a, b) => b.score - a.score);
+      const keep = []; let total = 0;
+      for (const c of sorted) { const len = c.s.end - c.s.start; if (total + len > targetSec) continue; keep.push({ start: c.s.start, end: c.s.end, reason: `점수 ${Math.round(c.score)}`, i: c.i }); total += len; if (total >= targetSec * 0.97) break; }
+      keep.sort((a, b) => a.i - b.i);
+      const hook = sorted[0]?.s.text || source.title;
+      return { keep: keep.map(({ i, ...k }) => k), hook };
+    };
+    const transcript = segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`).join('\n');
+    const res = await this.ai.complete({
+      system: '유튜브 롱폼 재구성 편집자입니다. 원본 대본에서 목표 길이에 맞게 남길 구간을 고르고 후킹→본문→마무리 구조로 재배열한 계획을 JSON 으로만 답합니다.',
+      prompt: `제목: ${source.title}\n장르: ${genre}\n목표 길이: ${targetSec}초 (원본 ${source.durationSec}초)\n호흡: ${pacing}${styleProfile ? `\n참고 스타일: ${JSON.stringify({ structure: styleProfile.structure, tone: styleProfile.tone, hookType: styleProfile.hookType })}` : ''}\n\n대본:\n${transcript}\n\n형식: {"hook":"첫 10초 후킹 멘트","keep":[{"start":초,"end":초,"reason":"선정 이유"}],"outline":["섹션 제목"],"title":"새 제목","description":"설명 2문장"}`,
+      json: true, maxTokens: 12000, fallback: heuristic,
+    });
+    const base = res && Array.isArray(res.keep) && res.keep.length ? res : heuristic();
+    let keep = base.keep.map((k) => ({ start: clamp(Number(k.start) || 0, 0, source.durationSec), end: clamp(Number(k.end) || 0, 0, source.durationSec), reason: k.reason || '' })).filter((k) => k.end - k.start >= 1).sort((a, b) => a.start - b.start);
+    keep = mergeAdjacent(keep);
+    // 목표 길이 초과분은 뒤에서부터 잘라내고, 부족하면 원본 순서대로 채운다 (1~28분 보장)
+    let total = keep.reduce((s, k) => s + (k.end - k.start), 0);
+    while (total > targetSec * 1.05 && keep.length > 1) { const last = keep.pop(); total -= last.end - last.start; }
+    if (total > targetSec * 1.05 && keep.length === 1) { keep[0].end = keep[0].start + targetSec; total = targetSec; }
+    if (total < Math.min(targetSec, source.durationSec) * 0.9) {
+      for (const s of segments) { if (total >= targetSec * 0.97) break; if (keep.some((k) => s.start < k.end && s.end > k.start)) continue; keep.push({ start: s.start, end: s.end, reason: '길이 보충' }); total += s.end - s.start; }
+      keep.sort((a, b) => a.start - b.start); keep = mergeAdjacent(keep); total = keep.reduce((s, k) => s + (k.end - k.start), 0);
+    }
+    const minSec = REMIX_LIMITS.minMinutes * 60;
+    if (total < minSec && source.durationSec >= minSec) { keep = [{ start: 0, end: Math.min(source.durationSec, targetSec), reason: '최소 길이 보장' }]; total = keep[0].end; }
+    const outline = base.outline?.length ? base.outline : (styleProfile?.structure || ['후킹', '본문', '마무리']);
+    const speedFactor = pacing === 'fast' ? 1.08 : pacing === 'slow' ? 0.97 : 1;
+    return { hook: String(base.hook || source.title).slice(0, 120), keep, outline, title: String(base.title || `${source.title} (재구성)`).slice(0, 100), description: String(base.description || '').slice(0, 500), pacing, speedFactor, finalDurationSec: Math.round(total / speedFactor), reorder: opts.reorder, engine: this.ai.lastMode };
+  }
+
+  // 새 자막·효과음·배경음·전환·내레이션
+  async rebuild({ job, plan, segments, genre, styleProfile }) {
+    const opts = job.options;
+    const template = opts.template === 'auto' ? (TEMPLATES.find((t) => t.id === styleProfile?.subtitleStyle) || templateFor(genre)) : (TEMPLATES.find((t) => t.id === opts.template) || templateFor(genre));
+    // 새 타임라인에서의 위치 계산
+    let cursor = 0; const timeline = [];
+    for (const k of plan.keep) { timeline.push({ ...k, newStart: round(cursor), newEnd: round(cursor + (k.end - k.start)) }); cursor += k.end - k.start; }
+
+    let subtitles = [];
+    if (opts.newSubtitles) {
+      for (const t of timeline) {
+        const segs = segments.filter((s) => s.end > t.start && s.start < t.end).map((s) => ({ ...s, start: Math.max(s.start, t.start), end: Math.min(s.end, t.end) }));
+        for (const s of semanticSplit(segs)) subtitles.push({ ...s, start: round(s.start - t.start + t.newStart), end: round(s.end - t.start + t.newStart), words: s.words.map((w) => ({ ...w, start: round(w.start - t.start + t.newStart), end: round(w.end - t.start + t.newStart) })), animation: template.animation });
+      }
+      subtitles = subtitles.map((s, i) => ({ ...s, id: `seg-${i + 1}` }));
+    }
+
+    const sfx = [];
+    if (opts.newSfx) {
+      const density = styleProfile?.sfxDensity || (plan.pacing === 'fast' ? 'high' : 'medium');
+      const every = density === 'high' ? 1 : density === 'medium' ? 2 : 4;
+      timeline.forEach((t, i) => { if (i % every === 0) sfx.push({ at: t.newStart, name: SFX_LIBRARY[i % SFX_LIBRARY.length], reason: '구간 전환' }); });
+      subtitles.forEach((s, i) => { if (/[!?]$/.test(s.text) && i % 3 === 0) sfx.push({ at: s.start, name: /\?$/.test(s.text) ? 'ding' : 'boom', reason: '강조 문장' }); });
+      sfx.sort((a, b) => a.at - b.at);
+    }
+    const bgm = opts.newBgm ? { track: styleProfile?.bgm || BGM_LIBRARY[genre] || 'upbeat-corporate', volumeDb: -18, duckUnderVoice: true, fadeInSec: 1.5, fadeOutSec: 2 } : null;
+    const transitions = timeline.slice(1).map((t) => ({ at: t.newStart, type: opts.transitions === 'auto' ? (styleProfile?.transitions || (plan.pacing === 'fast' ? 'hard-cut' : 'crossfade')) : opts.transitions, durationSec: 0.3 }));
+    const colorGrade = opts.colorGrade === 'auto' ? (styleProfile?.colorGrade || 'clean-bright') : opts.colorGrade;
+
+    let narration = null;
+    if (opts.narration !== 'none') {
+      const lines = await this.writeNarration({ plan, subtitles, mode: opts.narration, tone: styleProfile?.tone || 'friendly' });
+      const renders = [];
+      for (const [i, line] of lines.entries()) {
+        const r = await this.voice.synthesize(job.userId, { profileId: opts.voiceProfileId, text: line.text, style: i === 0 ? 'hook' : 'natural', outputName: `remix-${job.id.slice(0, 8)}-${i + 1}` });
+        renders.push({ at: line.at, text: line.text, audioPath: r.audioPath, engine: r.engine, durationSec: r.durationSec });
+      }
+      narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId, lines: renders, replacesOriginalVoice: opts.narration === 'full' && !opts.keepOriginalVoice };
+    }
+
+    return { timeline, template: { id: template.id, name: template.name, font: template.font }, subtitles, sfx, bgm, transitions, colorGrade, narration, ratio: opts.ratio };
+  }
+
+  async writeNarration({ plan, subtitles, mode, tone }) {
+    const fallback = () => {
+      const lines = [{ at: 0, text: plan.hook }];
+      if (mode === 'full') for (const [i, o] of plan.outline.entries()) { const anchor = subtitles[Math.floor((subtitles.length / Math.max(1, plan.outline.length)) * i)]; lines.push({ at: anchor ? anchor.start : i * 30, text: `${o}. ${anchor ? anchor.text : ''}`.trim() }); }
+      lines.push({ at: Math.max(0, plan.finalDurationSec - 8), text: '끝까지 봐주셔서 감사합니다. 다음 영상도 기대해주세요!' });
+      return lines;
+    };
+    const res = await this.ai.complete({
+      system: `영상 내레이션 작가입니다. ${tone} 톤으로 ${mode === 'intro' ? '오프닝 후킹 1줄과 마무리 1줄' : '오프닝·각 섹션 소개·마무리 내레이션'}을 JSON 배열 [{"at":초,"text":"..."}] 로만 답합니다.`,
+      prompt: `후킹: ${plan.hook}\n아웃라인: ${plan.outline.join(' / ')}\n총 길이: ${plan.finalDurationSec}초\n자막 요약: ${subtitles.slice(0, 40).map((s) => `[${s.start}] ${s.text}`).join('\n')}`,
+      json: true, maxTokens: 4000, fallback,
+    });
+    const lines = Array.isArray(res) && res.length ? res.map((l) => ({ at: Math.max(0, Number(l.at) || 0), text: String(l.text || '').slice(0, 400) })).filter((l) => l.text) : fallback();
+    return lines.sort((a, b) => a.at - b.at);
+  }
+
+  // ffmpeg 이 있고 로컬 파일이면 실제 렌더링(구간 이어붙이기 + 배속 + 자막), 아니면 렌더 계획을 남긴다
+  async render({ job, plan, rebuild, cleaning }) {
+    const ass = toASS(rebuild.subtitles, { font: rebuild.template.font, size: 56, playResX: rebuild.ratio === '9:16' ? 1080 : 1920, playResY: rebuild.ratio === '9:16' ? 1920 : 1080 });
+    const dir = path.join(this.outputDir, job.userId, 'remix');
+    const out = path.join(dir, `${job.id}.mp4`);
+    const assPath = path.join(dir, `${job.id}.ass`);
+    const dims = rebuild.ratio === '9:16' ? '1080:1920' : rebuild.ratio === '1:1' ? '1080:1080' : '1920:1080';
+    const [w, h] = dims.split(':');
+    const cropFilter = cleaning.steps.find((s) => s.id === 'burned-subtitles') ? `,crop=iw:ih*0.78:0:0` : '';
+    const select = plan.keep.map((k) => `between(t,${k.start},${k.end})`).join('+');
+    const vf = `select='${select}',setpts=N/FRAME_RATE/TB${cropFilter},scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setpts=PTS/${plan.speedFactor},subtitles='${assPath.replace(/'/g, "\\'")}'`;
+    const af = `aselect='${select}',asetpts=N/SR/TB,atempo=${Math.min(2, Math.max(0.5, plan.speedFactor))},loudnorm=I=-14`;
+    const args = ['-y', '-i', job.source.path || 'INPUT.mp4', '-vf', vf, '-af', af, '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', out];
+    if (job.source.path && which('ffmpeg')) {
+      try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(assPath, ass); await run('ffmpeg', args); return { rendered: true, output: out, subtitleFile: assPath, args }; }
+      catch (err) { return { rendered: false, error: err.message, plan: { bin: 'ffmpeg', args }, subtitleASS: ass }; }
+    }
+    return { rendered: false, plan: { bin: 'ffmpeg', args, note: job.source.path ? 'ffmpeg 을 설치하면 실제 MP4 가 렌더링됩니다.' : '유튜브 원본은 yt-dlp 로 내려받은 뒤 ffmpeg 으로 렌더링됩니다.' }, subtitleASS: ass };
+  }
+
+  // ---- 조회/편집/삭제 ----
+  list(userId) { return this.store.find('remixJobs', (j) => j.userId === userId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  get(userId, id) { const j = this.store.get('remixJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '재구성 작업을 찾을 수 없습니다.'); return j; }
+  remove(userId, id) { this.get(userId, id); return this.store.remove('remixJobs', id); }
+
+  updateResult(userId, id, patch) {
+    const j = this.get(userId, id);
+    if (j.status !== 'done') throw new ApiError(409, '완료된 작업만 수정할 수 있습니다.');
+    const result = { ...j.result };
+    if (patch.title != null) result.plan = { ...result.plan, title: String(patch.title).slice(0, 100) };
+    if (patch.subtitles) result.subtitles = patch.subtitles.map((s, i) => ({ id: s.id || `seg-${i + 1}`, start: Number(s.start), end: Number(s.end), text: String(s.text), words: s.words || [], animation: s.animation || 'none' }));
+    if (patch.sfx) result.sfx = patch.sfx.map((s) => ({ at: Number(s.at), name: String(s.name), reason: s.reason || '수동' }));
+    if (patch.bgm !== undefined) result.bgm = patch.bgm ? { ...(result.bgm || {}), ...patch.bgm } : null;
+    return this.store.update('remixJobs', id, { result });
+  }
+
+  async regenerate(userId, id) {
+    const j = this.get(userId, id);
+    if (j.status !== 'done' && j.status !== 'failed') throw new ApiError(409, '진행 중인 작업은 다시 만들 수 없습니다.');
+    const half = Math.round((j.minutesCharged / 2) * 100) / 100;
+    this.credits.charge(userId, half, `AI 재구성 다시 만들기(50%): ${j.source.title}`, { jobId: id });
+    this.store.update('remixJobs', id, { status: 'queued', step: 'queued', progress: 0, result: null, error: null, log: [{ at: new Date().toISOString(), step: 'queued', message: '다시 만들기 (이용권 50% 차감)' }] });
+    const t = setTimeout(() => this._run(id).catch((err) => this._fail(id, err)), 10);
+    if (t.unref) t.unref();
+    return this.store.get('remixJobs', id);
+  }
+}
+
+function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
+function round(n) { return Math.round(n * 100) / 100; }
+function mergeAdjacent(keep) {
+  const out = [];
+  for (const k of keep) { const last = out[out.length - 1]; if (last && k.start - last.end < 0.5) { last.end = Math.max(last.end, k.end); } else out.push({ ...k }); }
+  return out;
+}

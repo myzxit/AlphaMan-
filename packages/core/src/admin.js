@@ -17,6 +17,8 @@ export class AdminService {
       shorts: { jobs: jobs.length, clips: clips.length, processing: jobs.filter((j) => j.status === 'processing' || j.status === 'queued').length, failed: jobs.filter((j) => j.status === 'failed').length, minutesProcessed: Math.round(jobs.reduce((s, j) => s + (j.minutesCharged || 0), 0)) },
       subtitles: { projects: this.store.count('subtitleProjects') },
       longform: { jobs: this.store.count('longformJobs') },
+      remix: { jobs: this.store.count('remixJobs'), done: this.store.count('remixJobs', (j) => j.status === 'done') },
+      voice: { profiles: this.store.count('voiceProfiles'), renders: this.store.count('voiceRenders') },
       publish: { queued: this.store.count('publishQueue', (q) => q.status === 'scheduled'), published: this.store.count('publishQueue', (q) => q.status === 'published') },
       support: { openInquiries: this.store.count('inquiries', (i) => i.status === 'open'), feedback: this.store.count('feedback'), teamRequests: this.store.count('teamRequests', (t) => t.status === 'pending') },
       revenue: { paymentsKRW: this.store.find('payments', (p) => p.currency === 'KRW').reduce((s, p) => s + p.amount, 0), paymentsUSD: this.store.find('payments', (p) => p.currency === 'USD').reduce((s, p) => s + p.amount, 0), count: this.store.count('payments') },
@@ -76,7 +78,7 @@ export class AdminService {
     const u = this.store.get('users', id);
     if (!u) throw new ApiError(404, '사용자를 찾을 수 없습니다.');
     if (u.isSeededAdmin) throw new ApiError(400, '기본 관리자 계정은 삭제할 수 없습니다.');
-    for (const c of ['sessions', 'jobs', 'clips', 'subtitleProjects', 'longformJobs', 'publishAccounts', 'publishQueue', 'topicReports', 'notifications', 'pixieThreads', 'credits']) {
+    for (const c of ['sessions', 'jobs', 'clips', 'subtitleProjects', 'longformJobs', 'remixJobs', 'voiceProfiles', 'voiceRenders', 'publishAccounts', 'publishQueue', 'topicReports', 'notifications', 'pixieThreads', 'credits']) {
       for (const rec of this.store.find(c, (r) => r.userId === id)) this.store.remove(c, rec.id);
     }
     this.store.remove('users', id);

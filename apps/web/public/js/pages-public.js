@@ -1,6 +1,6 @@
 // 공개 페이지: 랜딩(알파컷 전체 섹션), 로그인/가입, 가격, 가이드, FAQ, 무료 도구, 추천인, 팀, 법적 정보, 다운로드, 공지
 import { get, post, setToken } from './api.js';
-import { esc, html, raw, toast, modal, fmtKRW, readVideoMeta, qs, qsa } from './ui.js';
+import { esc, html, raw, toast, modal, fmtKRW, creditsLabel, readVideoMeta, qs, qsa } from './ui.js';
 import { startShortsFromLanding } from './pages-app.js';
 
 const genreIcons = { education: '🎓', interview: '🎙️', info: '📰', gaming: '🎮', vlog: '🌿' };
@@ -18,7 +18,7 @@ export async function landing({ view, state, navigate }) {
         <div class="tabs" id="hero-tabs"><button class="tab active" data-tab="youtube">유튜브 링크</button><button class="tab" data-tab="file">파일 업로드</button></div>
         <div id="hero-youtube"><div class="input-row"><input id="hero-url" placeholder="${c.hero.inputs[0].placeholder}" /><button class="btn btn-primary" id="hero-go">${c.hero.cta}</button></div></div>
         <div id="hero-file" class="hidden"><div class="dropzone" id="hero-drop">MP4, MOV, WebM 파일을 끌어다 놓거나 클릭해서 선택 <input type="file" id="hero-file-input" accept="video/*" class="hidden" /></div><div id="hero-file-meta" class="small muted" style="margin-top:8px"></div><button class="btn btn-primary btn-block" id="hero-go-file" style="margin-top:8px" disabled>${c.hero.cta}</button></div>
-        <div class="tiny muted" style="margin-top:8px">${state.user ? `보유 이용권 ${state.user.credits}분` : '회원가입 시 30분 무료 이용권 제공 · 원본 길이만큼 차감'}</div>
+        <div class="tiny muted" style="margin-top:8px">${state.user ? `보유 이용권 ${creditsLabel(state.user)}` : '회원가입 시 30분 무료 이용권 제공 · 원본 길이만큼 차감'}</div>
       </div>
       <div class="stats">${raw(c.hero.stats.map((s) => `<div class="stat"><div class="value">${esc(s.value)}</div><div class="label">${esc(s.label)}</div></div>`).join(''))}</div>
     </section>

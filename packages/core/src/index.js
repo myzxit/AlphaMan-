@@ -16,6 +16,8 @@ import { SubtitleProjects } from './subtitles/projects.js';
 import { DiscoveryService } from './discovery.js';
 import { PixieService } from './pixie.js';
 import { AdminService } from './admin.js';
+import { VoiceService } from './voice.js';
+import { RemixEngine, REMIX_LIMITS, REMIX_DEFAULTS } from './remix.js';
 import { toolAvailability } from './media.js';
 import { LOCALES } from './i18n.js';
 import { CONTENT } from './content.js';
@@ -37,7 +39,8 @@ export class AlphaMan {
     this.ai = new AIService();
     this.translate = new TranslateService(this.ai);
     this.support = new SupportService({ store: this.store, notifications: this.notifications });
-    this.shorts = new ShortsEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications, uploadsDir: this.uploadsDir, outputDir: this.outputDir });
+    this.voice = new VoiceService({ store: this.store, outputDir: this.outputDir });
+    this.shorts = new ShortsEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications, uploadsDir: this.uploadsDir, outputDir: this.outputDir, voice: this.voice });
     this.longform = new LongformEngine({ store: this.store, credits: this.credits, ai: this.ai, notifications: this.notifications });
     this.publish = new PublishService({ store: this.store, notifications: this.notifications });
     this.topic = new TopicService({ store: this.store, ai: this.ai });
@@ -45,6 +48,7 @@ export class AlphaMan {
     this.subtitles = new SubtitleProjects({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications });
     this.discovery = new DiscoveryService({ store: this.store });
     this.pixie = new PixieService({ store: this.store, ai: this.ai, support: this.support });
+    this.remix = new RemixEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, voice: this.voice, notifications: this.notifications, outputDir: this.outputDir });
     this.admin = new AdminService({ store: this.store, credits: this.credits, auth: this.auth, support: this.support, notifications: this.notifications, publish: this.publish });
 
     this.auth.seedAdmin();
@@ -55,7 +59,7 @@ export class AlphaMan {
     return {
       name: 'AlphaMan', version: VERSION, platform: this.platform, locales: LOCALES,
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,
-      tools: toolAvailability(), ai: await this.ai.status(),
+      tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), remixLimits: REMIX_LIMITS,
       adminEmail: ADMIN_ACCOUNT.email,
       settings: this.admin.settings(),
       content: CONTENT,
@@ -81,3 +85,5 @@ export { exportSubtitles, parseSRT, toSRT, toVTT, toASS } from './subtitles/form
 export { semanticSplit } from './subtitles/stt.js';
 export { nextOccurrences } from './publish.js';
 export { TOOLS } from './tools.js';
+export { REMIX_LIMITS, REMIX_DEFAULTS } from './remix.js';
+export { VOICE_STYLES } from './voice.js';
