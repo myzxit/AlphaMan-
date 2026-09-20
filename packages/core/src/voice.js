@@ -74,11 +74,12 @@ export class VoiceService {
   _freeEngine() { return which('edge-tts') ? 'edge-tts' : this._edgeNode ? 'edge' : this._google ? 'google' : 'browser'; }
   freeVoices() { return FREE_VOICES.map((v) => ({ ...v, engine: this._freeEngine() })); }
   // 실제 음성 파일을 만들 수 있는 무료 엔진을 한 번 탐색해 둔다 (서버 시작 시 백그라운드)
-  async detectFreeEngines() {
-    if (this._detected) return { edgeNode: this._edgeNode, google: this._google };
-    this._detected = true;
-    [this._edgeNode, this._google] = await Promise.all([edgeTtsAvailable().catch(() => false), googleTtsAvailable().catch(() => false)]);
-    return { edgeNode: this._edgeNode, google: this._google };
+  detectFreeEngines() {
+    if (!this._detecting) {
+      this._detecting = Promise.all([edgeTtsAvailable().catch(() => false), googleTtsAvailable().catch(() => false)])
+        .then(([e, g]) => { this._edgeNode = e; this._google = g; this._detected = true; return { edgeNode: e, google: g }; });
+    }
+    return this._detecting;
   }
   freeVoice(id) { return FREE_VOICES.find((v) => v.id === id) || null; }
 
@@ -179,7 +180,7 @@ export class VoiceService {
         try { fs.mkdirSync(dir, { recursive: true }); await run('edge-tts', ['--voice', fv.edge, '--rate', rate, '--pitch', pitch, '--text', clean, '--write-media', out]); return this._record(userId, { ...base, engine: 'edge-tts', audioPath: out, durationSec: estimatedSec, browser }); }
         catch (err) { console.warn('[voice] edge-tts CLI 실패:', err.message); }
       }
-      if (!this._detected && process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.detectFreeEngines().catch(() => {});
+      if (!this._detected && process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.detectFreeEngines().catch(() => {}); // 탐색이 진행 중이면 끝날 때까지 기다린다
       if (this._edgeNode) {
         try { const mp3 = await edgeSynthesize({ text: clean, voice: fv.edge, rate, pitch }); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(out, mp3); return this._record(userId, { ...base, engine: 'edge', audioPath: out, durationSec: estimatedSec, browser }); }
         catch (err) { console.warn('[voice] Edge TTS 실패:', err.message); this._edgeNode = false; }

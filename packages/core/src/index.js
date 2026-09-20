@@ -66,6 +66,7 @@ export class AlphaMan {
   }
 
   async info() {
+    if (this.platform !== 'test' && process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.voice.detectFreeEngines().catch(() => {});
     return {
       name: 'AlphaMan', version: VERSION, platform: this.platform, locales: LOCALES,
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,
