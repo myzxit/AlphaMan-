@@ -8,6 +8,7 @@ const COLLECTIONS = [
   'subtitleProjects', 'publishAccounts', 'publishQueue', 'topicReports',
   'inquiries', 'notifications', 'feedback', 'notices', 'referrals', 'teamRequests',
   'payments', 'pixieThreads', 'uploads', 'settings', 'auditLog', 'remixJobs', 'voiceProfiles', 'voiceRenders', 'library',
+  'activities', 'versions', 'userTemplates', 'shares', 'orders', 'errorLog', 'workspaceState', 'backups',
   'tombstones', // 삭제 기록 {collection,id,at} — 여러 서버 인스턴스의 저장소를 병합할 때 삭제가 되살아나지 않도록
 ];
 const MAX_TOMBSTONES = 3000;
@@ -27,6 +28,17 @@ export function mergeSnapshots(a, b) {
       if (!prev || String(rec.updatedAt || '') >= String(prev.updatedAt || '')) byId.set(rec.id, rec);
     }
     out[c] = [...byId.values()].filter((rec) => { const t = tombs.get(`${c}:${rec.id}`); return !(t && String(t.at) >= String(rec.updatedAt || rec.createdAt || '')); });
+    if (c === 'users') {
+      // 같은 이메일로 중복 가입된 레코드(인스턴스 병합 전)는 하나로: 오래된 쪽을 유지하되 비밀번호가 없으면 새 쪽의 것을 가져온다
+      const byEmail = new Map();
+      for (const u of out[c].sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))) {
+        const prev = u.email ? byEmail.get(u.email) : null;
+        if (!prev) { if (u.email) byEmail.set(u.email, u); continue; }
+        if (!prev.passwordHash && u.passwordHash) prev.passwordHash = u.passwordHash;
+        if (u.role === 'admin') prev.role = 'admin';
+      }
+      out[c] = out[c].filter((u) => !u.email || byEmail.get(u.email) === u);
+    }
   }
   out.tombstones = [...tombs.values()].sort((x, y) => String(x.at).localeCompare(String(y.at))).slice(-MAX_TOMBSTONES);
   return out;
@@ -129,7 +141,8 @@ export class Store {
 
   insert(name, doc) {
     const now = new Date().toISOString();
-    const rec = { id: doc.id || randomUUID(), createdAt: now, updatedAt: now, ...doc };
+    const { id, createdAt, updatedAt, ...rest } = doc; // id/createdAt/updatedAt 가 undefined 로 넘어와도 새 값으로 채운다 (복제·가져오기)
+    const rec = { id: id || randomUUID(), createdAt: createdAt || now, updatedAt: updatedAt || now, ...rest };
     this.col(name).push(rec);
     this.touch();
     return rec;

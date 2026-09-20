@@ -6,6 +6,7 @@ process.env.ALPHAMAN_AI = 'off';
 process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
 process.env.ALPHAMAN_TTS_DETECT = 'off'; // 테스트에서는 네트워크 TTS 탐색 생략
+process.env.ALPHAMAN_FAKE_PAYMENTS = '1'; // 테스트 전용 시뮬레이션 결제
 
 function app() { return new AlphaMan({ memory: true, platform: 'test' }); }
 function waitFor(fn, ms = 4000) {

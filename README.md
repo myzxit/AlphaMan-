@@ -76,10 +76,35 @@ Node.js 20.10 이상이 필요합니다. 외부 런타임 의존성은 없습니
   3. 서버에 `whisper` CLI 가 있으면 서버에서 직접 받아 적습니다.
   - 대본을 구하지 못하면 작업을 만들지 않고 안내(422)로 실패하며 이용권은 차감되지 않습니다. 결과에는 "원본 대본 그대로" 배지가 표시됩니다. (`ALPHAMAN_ALLOW_SIMULATED_STT=1` 은 테스트·데모 전용)
 
+## 플랫폼 기능 (프로젝트 · 작업 센터 · 파일 관리자 · 설정 · PWA · 결제)
+
+- **프로젝트 (`#/projects`)**: 쇼츠 · AI 재구성 · 롱폼 · 자막을 한곳에서 관리 — 이름 변경 · 즐겨찾기 · 검색 · 정렬(수정/생성/즐겨찾기/이름) · 복제 · 휴지통(복구/영구 삭제/비우기) · 버전 기록(저장/미리보기/복원/삭제) · JSON 내보내기/가져오기(형식 검증) · 여러 프로젝트 선택 후 일괄 적용(템플릿/비율/즐겨찾기/휴지통) · 마지막 작업 위치 "이어서 열기" · 읽기 전용 공유 링크(만료·취소).
+- **작업 센터 (`#/jobs`)**: 모든 AI 작업의 대기/처리/완료/실패/취소 상태, 진행률, 시작 시각, 예상 시간, 취소(이용권 환불), 재시도/다시 실행, 결과 열기, 끝난 기록 정리. 서버는 작업 큐(`ALPHAMAN_JOB_CONCURRENCY`, 기본 2)로 렌더/AI 작업을 순서대로 처리해 UI 가 멈추지 않습니다.
+- **파일 관리자 (`#/media`)**: 업로드한 영상/오디오/이미지, 자막, 렌더 결과물을 분류·검색·정렬·이름 변경·미리보기·다운로드·휴지통·복구·"프로젝트에 추가"(쇼츠/재구성/자막/롱폼). 업로드는 확장자 · MIME · 크기(`uploadLimits`)를 서버에서 검증합니다.
+- **자막 편집기 확장**: 자동 저장(저장 중/완료/실패 표시, 설정에서 끔) · 새로고침/종료 후 초안 복구 · 되돌리기/다시 실행 50단계와 변경 기록 · 문장 검색 · 찾기/바꾸기(정규식) · 시간 이동/배율 · SRT/VTT 가져오기 · 선택 일괄 편집 · 스타일을 템플릿으로 저장/적용 · 버전 기록 · 모바일 터치(드래그 이동 · 핀치 확대 · 큰 터치 영역).
+- **미리보기 플레이어**: 전체화면 · 재생 속도(0.25~2x) · 프레임 단위 이동(← →) · 볼륨/음소거 · 반복 · A-B 구간 반복 · 드래그 탐색.
+- **설정 (`#/settings`)**: 언어 · 다크모드 · 자동 저장 · 애니메이션 줄이기 · 알림 · 기본 화면 비율/자막 스타일/품질 · 템플릿 관리 · 단축키 · 사용량(저장공간/작업/결과물/AI) · 공유 링크 · 개인정보. 키보드 단축키: Space, Ctrl+Z / Ctrl+Shift+Z, Delete, Ctrl+S, Ctrl+C / Ctrl+V, F, M, L, [ ], Ctrl+/ (검색), ? (도움말).
+- **전체 검색 (`#/search`, 상단 검색창)**: 프로젝트 · 파일 · 자막 문장 · 템플릿 · 작업 기록.
+- **PWA · 오프라인**: `manifest.webmanifest` + `sw.js`(앱 셸 캐시) 로 Android/iPhone 홈 화면 · PC 바탕화면 설치, 오프라인 배너, 편집 초안 로컬 보존 후 네트워크 복구 시 동기화.
+- **오류 · 로딩 · 빈 상태**: 네트워크/인증/권한/업로드/서버 오류별 안내와 다시 시도/뒤로 가기, 스켈레톤 로딩, 페이지별 빈 상태 안내. 브라우저 오류는 `/api/client-errors` 로 서버 오류 로그에 기록됩니다 (설정 → 개인정보에서 끔).
+- **관리자 강화**: 시스템 상태(API/DB/Blob/렌더 워커/큐/TTS) · 오류 로그 · 저장공간(사용자별) · 백업/복원(하루 1회 자동 + 수동, 병합/덮어쓰기) · 주문/결제 · 렌더/큐 모니터. 모든 관리자 라우트는 서버에서 권한을 검사합니다.
+- **결제 (실결제)**: 국내는 **토스페이먼츠 결제창 v2**(카드/계좌이체/가상계좌/간편결제), 해외는 **Stripe Checkout**(USD). 서버가 주문과 금액을 만들고(`POST /api/billing/orders`), 결제사 리다이렉트 후 서버가 시크릿 키로 승인(`/api/billing/toss/confirm`, `/api/billing/stripe/confirm`)해 이용권을 지급합니다. 키가 없으면 가짜 결제를 만들지 않고 안내합니다(503). 토스는 문서 공개 테스트 키가 기본이라 실제 청구 없이 흐름을 확인할 수 있으며, 실제 매출은 반드시 내 상점 키를 넣어야 합니다.
+
+| 결제 환경변수 | 설명 |
+|---|---|
+| `TOSS_CLIENT_KEY` / `TOSS_SECRET_KEY` | 토스페이먼츠 내 상점 클라이언트/시크릿 키 (라이브 `live_ck_…`/`live_sk_…`). 없으면 공개 테스트 키 사용 |
+| `ALPHAMAN_PAYMENTS_TEST=off` | 테스트 키 기본값을 끄고 키가 없으면 결제 비활성 |
+| `STRIPE_SECRET_KEY` | Stripe 시크릿 키 (`sk_live_…` / `sk_test_…`) — 해외 USD 결제 |
+| `ALPHAMAN_USD_RATE` | USD 환산 환율 (기본 1350) |
+| `ALPHAMAN_FAKE_PAYMENTS=1` | 테스트 전용 시뮬레이션 결제(`/api/billing/checkout`) 허용 — 운영에서는 설정하지 않음 |
+
+토스 웹훅(가상계좌 입금 등)은 `POST /api/billing/toss/webhook` 으로 받습니다.
+
 ## 구조
 
 ```
-packages/core/        공통 기능 엔진 (auth, credits, shorts, longform, subtitles, publish, topic, translate, tools, discovery, pixie, support, admin)
+packages/core/        공통 기능 엔진 (auth, credits, shorts, longform, subtitles, publish, topic, translate, tools, discovery, pixie, support, admin,
+                      workspace(프로젝트), activity(작업 큐), medialib(파일), templates, share, payments, system(상태·오류·백업·사용량))
 apps/server/          REST API + 정적 UI 호스팅 (웹사이트 버전 진입점)
 apps/web/public/      빌드 없는 SPA UI (두 버전 공용)
 apps/desktop/         Electron 프로그램 버전 (내장 서버 + 파일/USB/트레이/OS 알림 브리지)
@@ -97,7 +122,7 @@ apps/desktop/         Electron 프로그램 버전 (내장 서버 + 파일/USB/�
 | `edge-tts` (`pip install edge-tts`) | 무료 목소리를 브라우저/OS 내장 음성으로 재생 | 무료 목소리 26종 MP3 파일 생성 (렌더링에 포함) |
 | `demucs` | 효과음/배경음 제거 계획 | 음원 분리로 목소리만 남기고 효과음·배경음 실제 제거 |
 
-환경 변수: `PORT`(기본 4100), `HOST`, `ALPHAMAN_DATA_DIR`(데이터 폴더), `ALPHAMAN_AI=off`(AI 강제 비활성), `ALPHAMAN_WHISPER_MODEL`.
+환경 변수: `PORT`(기본 4100), `HOST`, `ALPHAMAN_DATA_DIR`(데이터 폴더), `ALPHAMAN_AI=off`(AI 강제 비활성), `ALPHAMAN_WHISPER_MODEL`, `ALPHAMAN_JOB_CONCURRENCY`(작업 큐 동시 실행, 기본 2), `BLOB_READ_WRITE_TOKEN`(Vercel Blob — 서버리스에서 데이터/파일 영구 저장), 결제 키는 위 표 참고. API 키는 모두 서버 환경변수로만 읽고 프론트에는 공개 클라이언트 키만 내려갑니다.
 
 ## 프로그램 버전 전용 기능
 

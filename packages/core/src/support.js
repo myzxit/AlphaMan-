@@ -18,6 +18,11 @@ export class NotificationService {
     return true;
   }
 
+  remove(userId, ids = null) {
+    let n = 0;
+    for (const x of this.store.find('notifications', (r) => r.userId === userId && (!ids || ids.includes(r.id)))) { this.store.remove('notifications', x.id); n += 1; }
+    return n;
+  }
   broadcast({ title, body, link = null }) {
     for (const u of this.store.find('users')) this.push(u.id, { type: 'notice', title, body, link });
   }

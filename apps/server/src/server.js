@@ -56,6 +56,7 @@ export function createRequestHandler(app, { webDir = DEFAULT_WEB_DIR } = {}) {
     } catch (err) {
       const status = err instanceof ApiError ? err.status : 500;
       if (status >= 500 && !(err instanceof ApiError)) console.error(`[api] ${req.method} ${url.pathname}`, err);
+      if (status >= 500) { try { app.errors?.log({ level: 'error', source: 'server', message: err.message, stack: err.stack, route: `${req.method} ${url.pathname}`, userId: app.auth.userFromToken(bearer(req))?.id || null }); } catch { /* ignore */ } }
       return json(res, status, { error: err.message || '서버 오류', details: err.details || null });
     } finally {
       if (process.env.ALPHAMAN_LOG) console.log(`${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - started}ms`);
@@ -73,7 +74,9 @@ export async function startServer({ port = 4100, host = '127.0.0.1', dataDir, pl
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
   const actual = server.address().port;
   const url = `http://${host === '0.0.0.0' ? 'localhost' : host}:${actual}`;
-  const stop = () => new Promise((resolve) => { app.close(); server.close(() => resolve()); });
+  const backupTimer = setInterval(() => app.backup.autoBackup().catch(() => {}), 60 * 60 * 1000); if (backupTimer.unref) backupTimer.unref(); // 매시간 확인, 하루 1회 백업
+  app.backup.autoBackup().catch(() => {});
+  const stop = () => new Promise((resolve) => { clearInterval(backupTimer); app.close(); server.close(() => resolve()); });
   for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => { stop().then(() => process.exit(0)); });
   return { app, server, url, port: actual, stop };
 }

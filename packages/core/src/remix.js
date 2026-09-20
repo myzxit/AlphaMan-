@@ -39,8 +39,8 @@ const SFX_LIBRARY = ['whoosh', 'pop', 'ding', 'boom', 'click', 'riser', 'swoosh'
 const BGM_LIBRARY = { education: 'lofi-focus', interview: 'warm-acoustic', info: 'upbeat-corporate', gaming: 'edm-drive', vlog: 'sunny-pop' };
 
 export class RemixEngine {
-  constructor({ store, credits, ai, translate, voice, notifications, outputDir, library = null, seo = null, thumbnail = null }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.notifications = notifications; this.outputDir = outputDir; this.library = library; this.seo = seo; this.thumbnail = thumbnail;
+  constructor({ store, credits, ai, translate, voice, notifications, outputDir, library = null, seo = null, thumbnail = null, activity = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.notifications = notifications; this.outputDir = outputDir; this.library = library; this.seo = seo; this.thumbnail = thumbnail; this.activity = activity;
     this.speed = Number(process.env.ALPHAMAN_JOB_SPEED || 1);
   }
 
@@ -96,20 +96,30 @@ export class RemixEngine {
       status: 'queued', step: 'queued', progress: 0, log: [], result: null, error: null,
     });
     this.credits.charge(userId, minutes, `AI 재구성: ${source.title}`, { jobId: job.id });
-    const t = setTimeout(() => this._run(job.id).catch((err) => this._fail(job.id, err)), 10);
-    if (t.unref) t.unref();
+    this.activity?.start(userId, { kind: 'remix', refId: job.id, title: source.title, input: { url: url || null, uploadId: uploadId || null, referenceUrl, options: { ...opts, transcript: undefined }, rightsConfirmed: true, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' }, estimatedSec: Math.round(source.durationSec / 5) + 30 });
+    this._schedule(job.id);
     return job;
   }
+  _schedule(jobId) {
+    const run = () => this._run(jobId).catch((err) => this._fail(jobId, err));
+    if (this.activity?.queue) { this.activity.queue.push(run, { kind: 'remix', refId: jobId }); return; }
+    const t = setTimeout(run, 10); if (t.unref) t.unref();
+  }
+  onCancelled(jobId) { const j = this.store.get('remixJobs', jobId); if (j && j.status === 'queued') this._fail(jobId, Object.assign(new Error('대기 중 취소되었습니다.'), { cancelled: true })); }
 
   _log(jobId, step, progress, message) {
+    this.activity?.checkCancelled('remixJobs', jobId);
     this.store.update('remixJobs', jobId, (j) => ({ step, status: step === 'done' ? 'done' : 'processing', progress, log: [...j.log, { at: new Date().toISOString(), step, message }] }));
+    this.activity?.progress('remix', jobId, progress, step);
   }
   _wait(ms) { return new Promise((r) => { const t = setTimeout(r, Math.max(0, ms / this.speed)); if (t.unref) t.unref(); }); }
 
   _fail(jobId, err) {
-    console.error('[remix] 작업 실패', jobId, err);
-    const job = this.store.update('remixJobs', jobId, (j) => ({ status: 'failed', error: err.message, log: [...j.log, { at: new Date().toISOString(), step: 'failed', message: err.message }] }));
-    if (job) { this.credits.grant(job.userId, job.minutesCharged, '재구성 실패 환불', { jobId }); this.notifications?.push(job.userId, { type: 'remix.failed', title: 'AI 재구성 실패', body: err.message }); }
+    const cancelled = Boolean(err?.cancelled);
+    if (!cancelled) console.error('[remix] 작업 실패', jobId, err);
+    const job = this.store.update('remixJobs', jobId, (j) => ({ status: cancelled ? 'cancelled' : 'failed', error: err.message, log: [...j.log, { at: new Date().toISOString(), step: cancelled ? 'cancelled' : 'failed', message: err.message }] }));
+    if (job) { this.credits.grant(job.userId, job.minutesCharged, cancelled ? '재구성 취소 환불' : '재구성 실패 환불', { jobId }); this.notifications?.push(job.userId, { type: cancelled ? 'remix.cancelled' : 'remix.failed', title: cancelled ? 'AI 재구성 취소' : 'AI 재구성 실패', body: err.message, link: '#/jobs' }); }
+    this.activity?.fail('remix', jobId, err);
   }
 
   // ---- 파이프라인 ----
@@ -167,6 +177,7 @@ export class RemixEngine {
     if (this.library) this.library.addRemixJob(done); // 보관함 자동 저장
     if (this.thumbnail) await this.thumbnail.auto(job.userId, 'remix', jobId).catch((e) => console.warn('[remix] 썸네일 자동 제작 실패:', e.message));
     this.notifications?.push(job.userId, { type: 'remix.done', title: 'AI 재구성 완료', body: `${result.summary} · 보관함에서 미리 볼 수 있어요.`, link: `#/remix/${jobId}` });
+    this.activity?.done('remix', jobId, { summary: result.summary, link: `#/remix/${jobId}` });
   }
 
   // 참고 영상 → 편집 스타일 프로필. 타임라인이 그대로 따라 하는 항목: 섹션 구조·구간 길이 패턴·후킹 길이·호흡·자막 스타일/위치·
@@ -366,7 +377,7 @@ export class RemixEngine {
   }
 
   // ---- 조회/편집/삭제 ----
-  list(userId) { return this.store.find('remixJobs', (j) => j.userId === userId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  list(userId) { return this.store.find('remixJobs', (j) => j.userId === userId && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
   get(userId, id) { const j = this.store.get('remixJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '재구성 작업을 찾을 수 없습니다.'); return j; }
   remove(userId, id) { this.get(userId, id); this.library?.removeByRef('remix', id); return this.store.remove('remixJobs', id); }
 
@@ -385,13 +396,13 @@ export class RemixEngine {
 
   async regenerate(userId, id) {
     const j = this.get(userId, id);
-    if (j.status !== 'done' && j.status !== 'failed') throw new ApiError(409, '진행 중인 작업은 다시 만들 수 없습니다.');
+    if (!['done', 'failed', 'cancelled'].includes(j.status)) throw new ApiError(409, '진행 중인 작업은 다시 만들 수 없습니다.');
     const half = Math.round((j.minutesCharged / 2) * 100) / 100;
     this.credits.charge(userId, half, `AI 재구성 다시 만들기(50%): ${j.source.title}`, { jobId: id });
     this.library?.removeByRef('remix', id);
-    this.store.update('remixJobs', id, { status: 'queued', step: 'queued', progress: 0, result: null, error: null, log: [{ at: new Date().toISOString(), step: 'queued', message: '다시 만들기 (이용권 50% 차감)' }] });
-    const t = setTimeout(() => this._run(id).catch((err) => this._fail(id, err)), 10);
-    if (t.unref) t.unref();
+    this.store.update('remixJobs', id, { status: 'queued', step: 'queued', progress: 0, result: null, error: null, cancelRequested: false, log: [{ at: new Date().toISOString(), step: 'queued', message: '다시 만들기 (이용권 50% 차감)' }] });
+    this.activity?.start(userId, { kind: 'remix', refId: id, title: `${j.source.title} (다시 만들기)`, input: { url: j.source.url || null, uploadId: j.source.uploadId || null, referenceUrl: j.reference?.url || null, options: { ...j.options, transcript: undefined }, rightsConfirmed: true, transcript: j.options.transcript || null, transcriptText: j.options.transcriptText || '' } });
+    this._schedule(id);
     return this.store.get('remixJobs', id);
   }
 }

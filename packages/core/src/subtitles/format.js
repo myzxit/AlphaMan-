@@ -12,9 +12,12 @@ export function formatTime(sec, { ms = ',', assStyle = false } = {}) {
 }
 
 export function parseTime(str) {
-  const m = String(str).trim().match(/^(\d+):(\d{2}):(\d{2})[,.](\d{1,3})$/);
-  if (!m) return NaN;
-  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, '0')) / 1000;
+  const s = String(str).trim();
+  const m = s.match(/^(\d+):(\d{2}):(\d{2})[,.](\d{1,3})$/);
+  if (m) return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, '0')) / 1000;
+  const short = s.match(/^(\d{1,2}):(\d{2})[,.](\d{1,3})$/); // WebVTT 는 시(hour) 생략 가능: mm:ss.ttt
+  if (short) return Number(short[1]) * 60 + Number(short[2]) + Number(short[3].padEnd(3, '0')) / 1000;
+  return NaN;
 }
 
 export function toSRT(segments) {
@@ -52,6 +55,22 @@ export function parseSRT(text) {
     if (timeIdx < 0) continue;
     const [a, c] = lines[timeIdx].split('-->').map((x) => parseTime(x.trim().replace('.', ',')));
     out.push({ start: a, end: c, text: lines.slice(timeIdx + 1).join('\n') });
+  }
+  return out;
+}
+
+// WebVTT 가져오기 (헤더·NOTE·STYLE 블록 무시, 큐 설정 무시)
+export function parseVTT(text) {
+  const body = String(text).replace(/\r/g, '').replace(/^WEBVTT[^\n]*\n/, '');
+  const blocks = body.split(/\n\n+/);
+  const out = [];
+  for (const b of blocks) {
+    const lines = b.trim().split('\n').filter((l) => !/^(NOTE|STYLE|REGION)/.test(l));
+    const timeIdx = lines.findIndex((l) => l.includes('-->'));
+    if (timeIdx < 0) continue;
+    const [a, c] = lines[timeIdx].split('-->').map((x) => parseTime(x.trim().split(/\s+/)[0].replace('.', ',')));
+    const textLines = lines.slice(timeIdx + 1).map((l) => l.replace(/<[^>]+>/g, '')).join('\n').trim();
+    if (Number.isFinite(a) && Number.isFinite(c) && textLines) out.push({ start: a, end: c, text: textLines });
   }
   return out;
 }

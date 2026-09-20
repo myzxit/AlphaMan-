@@ -97,6 +97,44 @@
 | 썸네일 자동 제작(원본과 비슷하게 / 장면 자동 선택) + 편집기(장면·캡처·문구·스타일·색상, PNG/SVG) | `thumbnail.js` (`/api/thumbnail/*`), SVG 조합, 유튜브 프레임·ffmpeg 프레임·브라우저 캡처 | ✓ | ✓ (ffmpeg 프레임 추출) |
 | 자막 = 원본 대본 그대로 | `stt.js transcribe` — 브라우저 Whisper(`transcript.js`, `stt-worker.js`) / 붙여넣은 대본(`parseTranscriptText`) / 서버 whisper / yt-dlp 유튜브 자막만 사용, 추정 대본 금지(422 안내), "원본 대본 그대로" 배지 | ✓ | ✓ (yt-dlp 자동 설치로 링크 대본 자동) |
 
+## 4-1. 플랫폼 기능 (기존 기능은 그대로, 추가만)
+
+| 항목 | 구현 | 웹 | 프로그램 |
+|---|---|---|---|
+| 프로젝트 관리 (복제·이름·즐겨찾기·검색·정렬·휴지통/복구/영구 삭제·마지막 위치·버전 기록·JSON 내보내기/가져오기·일괄 적용·공유 링크) | `workspace.js ProjectService` (`#/projects`, `/api/projects/*`), `share.js` (`/api/shares`, 공개 `/api/share/:token`) | ✓ | ✓ |
+| 작업 히스토리 · AI 작업 센터 (대기/처리/완료/실패/취소, 진행률, 시작·예상 시간, 취소·환불, 재시도/다시 실행) | `activity.js ActivityService + JobQueue` (`#/jobs`, `/api/activities/*`), 쇼츠·재구성·롱폼 엔진이 큐에서 실행 | ✓ | ✓ |
+| 알림 센터 (읽음·모두 읽음·삭제·최근) | `support.js NotificationService.remove` (`/api/notifications/delete`), 상단 🔔 드로어 | ✓ | ✓ |
+| 파일 관리자 (영상/이미지/오디오/자막/결과물, 검색·정렬·필터·이름·삭제·복구·미리보기·다운로드·프로젝트에 추가) | `medialib.js MediaService + validateUpload` (`#/media`, `/api/media/*`), 스튜디오/재구성/자막/롱폼 `?upload=` 프리필 | ✓ | ✓ |
+| 미리보기 강화 (전체화면·속도·프레임 이동·시간·볼륨·음소거·반복·A-B 반복·드래그 탐색) | `player.js` | ✓ | ✓ |
+| 실행 취소/다시 실행 50단계 + 변경 기록 | `subtitles/projects.js MAX_HISTORY/redo/historyInfo` (`/api/subtitles/projects/:id/redo`, `/history`) | ✓ | ✓ |
+| 자동 저장 + 복구 (저장 중/완료/실패, 새로고침·종료 후 초안 복구, 오프라인 대기 후 동기화) | `autosave.js createAutosave` (자막 편집기), 설정에서 끔 | ✓ | ✓ |
+| 영상 버전 관리 (저장/미리보기/복원/삭제) | `workspace.js snapshot/versions/restoreVersion` (`/api/projects/:kind/:id/versions*`) | ✓ | ✓ |
+| 템플릿 저장/적용 (자막·텍스트 스타일·효과·전환·비율·기본 옵션) | `templates.js UserTemplateService` (`/api/templates*`), 편집기 "템플릿으로 저장/적용", 프로젝트 일괄 적용 | ✓ | ✓ |
+| 자막 파일 관리 (SRT/VTT 가져오기·내보내기, 일괄 편집, 검색, 문장 찾기, 시간 이동/일괄 이동) | `subtitles/projects.js search/findReplace/shiftTime/importVtt`, `format.js parseVTT`(mm:ss.ttt 지원) | ✓ | ✓ |
+| 프로젝트 JSON 내보내기/가져오기 (형식·버전·자막 검증) | `workspace.js exportProject/importProject` (`/api/projects/:kind/:id/export`, `/api/projects/import`) | ✓ | ✓ |
+| 일괄 작업 (선택 → 템플릿/비율/즐겨찾기/휴지통/내보내기, 진행률) | `pages-workspace.js projects` + `/api/projects/:kind/:id/apply` | ✓ | ✓ |
+| 전체 검색 (프로젝트·파일·자막 문장·템플릿·작업 기록) | `/api/search` (`#/search`, 상단 검색창, Ctrl+/) | ✓ | ✓ |
+| 설정 페이지 (언어·다크모드·자동 저장·알림·기본 비율/자막 스타일/품질·단축키·사용량·공유·개인정보) | `auth.js updateProfile(prefs)` (`PATCH /api/auth/me`), `#/settings` | ✓ | ✓ |
+| 키보드 단축키 + 도움말 (Space, Ctrl+Z/Shift+Z, Delete, Ctrl+S, Ctrl+C/V, F, M, L, [, ], ?, Ctrl+/) | `shortcuts.js` | ✓ | ✓ |
+| 모바일 편집 UX (터치 드래그·핀치 확대·타임라인 확대·큰 터치 영역·세로 모드·파일 선택) | 편집기 터치 핸들러 + `styles.css` 720px/430px 미디어쿼리, `touch-lg` | ✓ | – |
+| PWA (manifest·서비스 워커·아이콘·설치 버튼·standalone) | `manifest.webmanifest`, `sw.js`, `icons/`, `app.js initPwa` | ✓ | – |
+| 오프라인 처리 (임시 저장·상태 보존·복구 시 동기화·배너) | `autosave.js initOfflineBanner`, 로컬 초안 | ✓ | ✓ |
+| 오류 시스템 (업로드/AI/렌더/저장/네트워크/인증별 안내 + 재시도/취소/뒤로) | `ui.js errorScreen`, 전역 라우트 오류 경계, `/api/client-errors` 보고 | ✓ | ✓ |
+| 로딩 상태 (스켈레톤·진행 바/링·단계 표시) · 빈 상태 | `ui.js skeleton/progressRing/emptyState` | ✓ | ✓ |
+| 반응형 (360~430px 가로 스크롤 없음, 태블릿/노트북/데스크톱) · 접근성 (건너뛰기 링크, focus-visible, aria, 44px 터치 영역, 애니메이션 줄이기) | `styles.css`, `index.html` | ✓ | ✓ |
+| 보안 (사용자별 접근, 서버 권한 검사, 업로드 확장자/MIME/크기 검증, 입력 검증, XSS 이스케이프, 프론트에 시크릿 없음, 요청 제한) | `api.js rateLimit/auth/admin`, `medialib.js validateUpload`, `payments.js keys()` | ✓ | ✓ |
+| Provider/Adapter 구조 (키는 env 에서만) | AI(`ai.js`) · TTS(`voice.js` 제공자 체인) · 결제(`payments.js` Toss/Stripe) · 저장소(`store.js` local/Blob) | ✓ | ✓ |
+| 렌더 작업 관리 (큐·진행률·취소·재시도·실패/완료 기록·결과 파일) | `activity.js JobQueue`, 엔진 `_schedule/_fail/onCancelled` | ✓ | ✓ |
+| 결과물 관리 (미리보기·다운로드·삭제·프로젝트 연결·버전) | 보관함 + 파일 관리자 "결과물" 분류 | ✓ | ✓ |
+| 관리자 강화 (사용자/작업/오류 로그/렌더 상태/시스템 상태/저장공간/주문) | `system.js SystemService/ErrorLogService/BackupService`, `/api/admin/system|errors|storage|backups|orders|activities` | ✓ | ✓ |
+| 시스템 상태 페이지 (API/DB/Storage/Render worker/Queue + 로그) | `#/admin/system`, `#/admin/errors`, `#/admin/activities` | ✓ | ✓ |
+| 성능 (페이지 모듈 지연 로딩, 정보성 API 캐시(SW), 알림 폴링은 화면이 보일 때만, 파일은 원본 1벌만 저장) | `app.js` 동적 import, `sw.js` | ✓ | ✓ |
+| SEO/공유 (title/description/OG/Twitter/favicon/canonical, 라우트별 제목, 명시적 공유 링크만) | `index.html` 메타, `app.js updateSeo`, `share.js` | ✓ | – |
+| 데이터 백업 (하루 1회 자동 + 수동, 복원 병합/덮어쓰기, 복원 전 자동 백업) | `system.js BackupService` (`/api/admin/backups*`) | ✓ | ✓ |
+| 사용량 관리 (저장공간·활성 작업·결과물·AI 사용량) | `system.js UsageService` (`/api/usage`), 설정 → 사용량 | ✓ | ✓ |
+| 실결제 (토스페이먼츠 결제창 v2 + 서버 승인 · Stripe Checkout) — 키 없으면 가짜 결제 없이 503 | `payments.js PaymentService` (`/api/billing/config|orders|toss/confirm|toss/webhook|stripe/session|stripe/confirm`), `#/pay/success`, `#/pay/fail` | ✓ | ✓ |
+| 비밀번호 오류 개선 (미가입/소셜 계정/비밀번호 불일치 구분, 중복 레코드 허용, 재설정 요청) | `auth.js login/requestPasswordReset` (`/api/auth/reset-request`), 로그인 페이지 | ✓ | ✓ |
+
 ## 5. 프로그램 버전에서만 추가되는 기능
 
 - 컴퓨터/USB 영상 직접 열기(업로드 없이 경로 지정), USB 드라이브 검색

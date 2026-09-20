@@ -31,8 +31,8 @@ export const DEFAULT_OPTIONS = Object.freeze({
 const STEPS = ['queued', 'downloading', 'transcribing', 'analyzing', 'editing', 'rendering', 'done'];
 
 export class ShortsEngine {
-  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir, voice = null, library = null, seo = null, thumbnail = null }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.library = library; this.seo = seo; this.thumbnail = thumbnail;
+  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir, voice = null, library = null, seo = null, thumbnail = null, activity = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.library = library; this.seo = seo; this.thumbnail = thumbnail; this.activity = activity;
     this.notifications = notifications;
     this.uploadsDir = uploadsDir; this.outputDir = outputDir;
     this.timers = new Map();
@@ -76,19 +76,25 @@ export class ShortsEngine {
       status: 'queued', step: 'queued', progress: 0, log: [], clipIds: [], error: null, regenerations: 0,
     });
     this.credits.charge(userId, minutes, `쇼츠 제작: ${source.title}`, { jobId: job.id });
+    // 작업 히스토리/진행 센터 기록 (다시 실행용 입력 포함)
+    this.activity?.start(userId, { kind: 'shorts', refId: job.id, title: source.title, input: { url: source.url || null, uploadId: source.uploadId || null, options: { ...opts, transcript: undefined }, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' }, estimatedSec: Math.round(source.durationSec / 6) + 20 });
     this._schedule(job.id);
     return job;
   }
 
-  // 2) 파이프라인 (비동기 단계별 진행) -------------------------------------------
+  // 2) 파이프라인 (비동기 단계별 진행, 동시 실행 수 제한 큐) -------------------------
   _schedule(jobId) {
-    const t = setTimeout(() => this._run(jobId).catch((err) => this._fail(jobId, err)), 10);
+    const run = () => this._run(jobId).catch((err) => this._fail(jobId, err));
+    if (this.activity?.queue) { this.activity.queue.push(run, { kind: 'shorts', refId: jobId }); return; }
+    const t = setTimeout(run, 10);
     if (t.unref) t.unref();
     this.timers.set(jobId, t);
   }
 
   _log(jobId, step, progress, message) {
+    this.activity?.checkCancelled('jobs', jobId);
     this.store.update('jobs', jobId, (j) => ({ step, status: step === 'done' ? 'done' : 'processing', progress, log: [...j.log, { at: new Date().toISOString(), step, message }] }));
+    this.activity?.progress('shorts', jobId, progress, step);
   }
 
   _wait(ms) { return new Promise((r) => { const t = setTimeout(r, Math.max(0, ms / this.speed)); if (t.unref) t.unref(); }); }
@@ -128,17 +134,22 @@ export class ShortsEngine {
     if (this.library) this.library.addShortsJob(done, clipIds.map((id) => this.store.get('clips', id)).filter(Boolean));
     if (this.thumbnail) for (const id of clipIds) await this.thumbnail.auto(job.userId, 'shorts', id).catch((e) => console.warn('[shorts] 썸네일 자동 제작 실패:', e.message)); // 썸네일 자동 제작
     this.notifications?.push(job.userId, { type: 'shorts.done', title: '쇼츠 제작 완료', body: `"${source.title}" 에서 쇼츠 ${clipIds.length}개가 완성됐어요. 보관함에서 미리 볼 수 있어요.`, link: `#/studio/${jobId}` });
+    this.activity?.done('shorts', jobId, { clips: clipIds.length, link: `#/studio/${jobId}` });
   }
 
   _fail(jobId, err) {
-    console.error('[shorts] 작업 실패', jobId, err);
-    const job = this.store.update('jobs', jobId, (j) => ({ status: 'failed', error: err.message, log: [...j.log, { at: new Date().toISOString(), step: 'failed', message: err.message }] }));
+    const cancelled = Boolean(err?.cancelled);
+    if (!cancelled) console.error('[shorts] 작업 실패', jobId, err);
+    const job = this.store.update('jobs', jobId, (j) => ({ status: cancelled ? 'cancelled' : 'failed', error: err.message, log: [...j.log, { at: new Date().toISOString(), step: cancelled ? 'cancelled' : 'failed', message: err.message }] }));
     if (job) {
-      // 실패 시 이용권 환불
-      this.credits.grant(job.userId, job.minutesCharged, '작업 실패 환불', { jobId });
-      this.notifications?.push(job.userId, { type: 'shorts.failed', title: '쇼츠 제작 실패', body: err.message });
+      // 실패/취소 시 이용권 환불
+      this.credits.grant(job.userId, job.minutesCharged, cancelled ? '작업 취소 환불' : '작업 실패 환불', { jobId });
+      this.notifications?.push(job.userId, { type: cancelled ? 'shorts.cancelled' : 'shorts.failed', title: cancelled ? '쇼츠 제작 취소' : '쇼츠 제작 실패', body: err.message, link: '#/jobs' });
     }
+    this.activity?.fail('shorts', jobId, err);
   }
+  // 대기 중 취소된 작업 정리 (큐에서 빠진 경우)
+  onCancelled(jobId) { const j = this.store.get('jobs', jobId); if (j && j.status === 'queued') this._fail(jobId, Object.assign(new Error('대기 중 취소되었습니다.'), { cancelled: true })); }
 
   // 3) 하이라이트 선정: "시청자의 관심을 끌 수 있는 장면, 중요한 정보, 감정적 몰입도" 기준. 2분당 1개.
   async findHighlights({ segments, durationSec, genre, title, clipCount }) {
@@ -276,7 +287,7 @@ export class ShortsEngine {
 
   // 6) 결과 조회/편집/재생성/내보내기 ---------------------------------------------
   listJobs(userId) {
-    return this.store.find('jobs', (j) => j.userId === userId && j.kind === 'shorts').sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.find('jobs', (j) => j.userId === userId && j.kind === 'shorts' && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   getJob(userId, jobId, { admin = false } = {}) {
@@ -311,11 +322,12 @@ export class ShortsEngine {
   async regenerate(userId, jobId) {
     const job = this.store.get('jobs', jobId);
     if (!job || job.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.');
-    if (job.status !== 'done' && job.status !== 'failed') throw new ApiError(409, '진행 중인 작업은 재생성할 수 없습니다.');
+    if (!['done', 'failed', 'cancelled'].includes(job.status)) throw new ApiError(409, '진행 중인 작업은 재생성할 수 없습니다.');
     const half = Math.round((job.minutesCharged / 2) * 100) / 100;
     this.credits.charge(userId, half, `쇼츠 재생성(50%): ${job.source.title}`, { jobId });
+    this.activity?.start(userId, { kind: 'shorts', refId: jobId, title: `${job.source.title} (재생성)`, input: { url: job.source.url || null, uploadId: job.source.uploadId || null, options: { ...job.options, transcript: undefined }, transcript: job.options.transcript || null, transcriptText: job.options.transcriptText || '' } });
     for (const id of job.clipIds) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); }
-    this.store.update('jobs', jobId, { status: 'queued', step: 'queued', progress: 0, clipIds: [], error: null, regenerations: job.regenerations + 1, log: [{ at: new Date().toISOString(), step: 'queued', message: '재생성 요청 (이용권 50% 차감)' }] });
+    this.store.update('jobs', jobId, { status: 'queued', step: 'queued', progress: 0, clipIds: [], error: null, cancelRequested: false, regenerations: job.regenerations + 1, log: [{ at: new Date().toISOString(), step: 'queued', message: '재생성 요청 (이용권 50% 차감)' }] });
     this._schedule(jobId);
     return this.store.get('jobs', jobId);
   }

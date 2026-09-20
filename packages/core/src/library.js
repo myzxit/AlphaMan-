@@ -62,7 +62,7 @@ export class LibraryService {
     this.sync(userId);
     let items = this.store.find('library', (r) => r.userId === userId);
     // 원본 작업이 지워진 항목은 정리
-    items = items.filter((r) => { if (this._ref(r)) return true; this.store.remove('library', r.id); return false; });
+    items = items.filter((r) => { const ref = this._ref(r); if (!ref) { this.store.remove('library', r.id); return false; } const job = r.kind === 'shorts' ? this.store.get('jobs', ref.jobId) : ref; return !(job && job.deletedAt) && !r.deletedAt; });
     if (kind && LIBRARY_KINDS[kind]) items = items.filter((r) => r.kind === kind);
     if (favorite === '1' || favorite === true) items = items.filter((r) => r.favorite);
     if (q) { const needle = String(q).toLowerCase(); items = items.filter((r) => `${r.title} ${r.sourceTitle} ${(r.tags || []).join(' ')} ${r.note || ''}`.toLowerCase().includes(needle)); }

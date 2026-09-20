@@ -17,5 +17,6 @@ export default async function vercelHandler(req, res) {
   if (req.url && req.url.startsWith('/api/')) await app.store.refreshIfStale(500);
   await handler(req, res);
   await app.voice.flushUploads().catch(() => {});
+  if (req.url && req.url.startsWith('/api/')) await app.backup.autoBackup().catch(() => {}); // 하루 1회 자동 백업
   await app.store.flushAsync();
 }

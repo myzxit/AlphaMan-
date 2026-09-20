@@ -20,6 +20,8 @@ export function toolAvailability() {
     ffprobe: Boolean(which('ffprobe')),
     ytdlp: Boolean(which('yt-dlp')),
     whisper: Boolean(which('whisper') || which('whisper-cpp') || which('main')),
+    demucs: Boolean(which('demucs')),
+    edgeTts: Boolean(which('edge-tts')),
   };
 }
 

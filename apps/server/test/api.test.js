@@ -6,6 +6,7 @@ process.env.ALPHAMAN_AI = 'off';
 process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
 process.env.ALPHAMAN_TTS_DETECT = 'off'; // 테스트에서는 네트워크 TTS 탐색 생략
+process.env.ALPHAMAN_FAKE_PAYMENTS = '1'; // 테스트 전용 시뮬레이션 결제
 
 async function boot() {
   const app = createApp({ memory: true, platform: 'test' });
@@ -126,4 +127,96 @@ test('API: info, admin login, admin-only routes, user flow', async () => {
   } finally {
     await t.close();
   }
+});
+
+test('API: 플랫폼 라우트 — 프로젝트/작업 센터/파일 관리자/템플릿/공유(공개)/검색/사용량/알림 삭제/결제 설정/오류 보고/관리자 시스템·백업, 권한 검사', async () => {
+  const t = await boot();
+  try {
+    const admin = (await t.call('POST', '/api/auth/login', { email: 'hhudeu66@gmail.com', password: 'an1823037' })).data.token;
+    const su = await t.call('POST', '/api/auth/signup', { email: 'plat@test.com', password: 'secret1', name: 'Plat' });
+    const tok = su.data.token; const uid = su.data.user.id;
+    const info = await t.call('GET', '/api/info');
+    assert.ok(info.data.projectKinds.subtitle && info.data.payments && info.data.uploadLimits.maxBytes > 0);
+    assert.ok(!JSON.stringify(info.data.payments).includes('_sk_'), '시크릿 키 노출 없음');
+    // 비로그인 → 401
+    assert.equal((await t.call('GET', '/api/projects')).status, 401);
+    assert.equal((await t.call('GET', '/api/media')).status, 401);
+    assert.equal((await t.call('GET', '/api/admin/system', undefined, tok)).status, 403);
+    // 자막 프로젝트 만들고 프로젝트 관리 라우트
+    const p = await t.call('POST', '/api/subtitles/projects', { url: 'https://youtu.be/abcdefghijk', transcriptText: '0:00\n첫 줄\n0:03\n둘째 줄' }, tok);
+    assert.equal(p.status, 200);
+    const list = await t.call('GET', '/api/projects?sort=updated', undefined, tok);
+    assert.equal(list.data.items.length, 1);
+    assert.equal((await t.call('PATCH', `/api/projects/subtitle/${p.data.id}`, { title: '이름 변경', favorite: true }, tok)).data.favorite, true);
+    assert.equal((await t.call('PUT', `/api/projects/subtitle/${p.data.id}/position`, { position: { playhead: 2 } }, tok)).data.ok, true);
+    assert.equal((await t.call('GET', `/api/projects/subtitle/${p.data.id}/position`, undefined, tok)).data.position.playhead, 2);
+    const ver = await t.call('POST', `/api/projects/subtitle/${p.data.id}/versions`, { label: 'v1' }, tok);
+    assert.equal(ver.data.number, 1);
+    const exp = await fetch(`${t.base}/api/projects/subtitle/${p.data.id}/export`, { headers: { authorization: `Bearer ${tok}` } });
+    assert.match(exp.headers.get('content-disposition') || '', /alphaman\.json/);
+    const imp = await t.call('POST', '/api/projects/import', await exp.json(), tok);
+    assert.equal(imp.status, 200);
+    assert.equal((await t.call('POST', '/api/projects/import', { format: 'x' }, tok)).status, 400);
+    assert.equal((await t.call('GET', `/api/projects/subtitle/${p.data.id}`, undefined, admin)).status, 404, '다른 사용자의 프로젝트는 관리자도 이 라우트로 못 본다');
+    assert.equal((await t.call('POST', `/api/projects/subtitle/${p.data.id}/trash`, {}, tok)).data.deletedAt != null, true);
+    assert.equal((await t.call('GET', '/api/projects', undefined, tok)).data.items.length, 1);
+    assert.equal((await t.call('POST', `/api/projects/subtitle/${p.data.id}/restore`, {}, tok)).data.deletedAt, null);
+    // 자막 편집 확장 라우트
+    assert.equal((await t.call('GET', `/api/subtitles/projects/${p.data.id}/search?q=둘째`, undefined, tok)).data.length, 1);
+    assert.equal((await t.call('POST', `/api/subtitles/projects/${p.data.id}/replace`, { find: '첫', replace: '1' }, tok)).data.changed, 1);
+    assert.equal((await t.call('POST', `/api/subtitles/projects/${p.data.id}/shift`, { offsetSec: 1 }, tok)).status, 200);
+    assert.equal((await t.call('GET', `/api/subtitles/projects/${p.data.id}/history`, undefined, tok)).data.max, 50);
+    assert.equal((await t.call('POST', `/api/subtitles/projects/${p.data.id}/undo`, {}, tok)).status, 200);
+    assert.equal((await t.call('POST', `/api/subtitles/projects/${p.data.id}/redo`, {}, tok)).status, 200);
+    assert.equal((await t.call('POST', `/api/subtitles/projects/${p.data.id}/import-vtt`, { vtt: 'WEBVTT\n\n00:00.000 --> 00:01.000\n하나\n' }, tok)).data.segments.length, 1);
+    // 업로드 검증 (확장자 차단)
+    const badUp = await t.call('POST', '/api/upload', Buffer.from('MZ'), tok, { 'content-type': 'application/octet-stream', 'x-filename': 'virus.exe' });
+    assert.equal(badUp.status, 400);
+    const up = await t.call('POST', '/api/upload', Buffer.from('fake-mp4-bytes'), tok, { 'content-type': 'video/mp4', 'x-filename': 'clip.mp4' });
+    assert.equal(up.status, 200);
+    const media = await t.call('GET', '/api/media?category=video', undefined, tok);
+    assert.equal(media.data.items.length, 1);
+    assert.equal((await t.call('PATCH', `/api/media/upload:${up.data.id}`, { name: 'renamed.mp4' }, tok)).data.ok, true);
+    assert.equal((await t.call('POST', `/api/media/upload:${up.data.id}/trash`, {}, admin)).status, 404, '다른 사용자 파일은 휴지통으로 못 보낸다');
+    // 템플릿 · 검색 · 사용량 · 작업 센터
+    const tpl = await t.call('POST', '/api/templates', { name: '내 스타일', kind: 'subtitle', settings: { subtitleStyle: { color: '#fff000' } } }, tok);
+    assert.equal(tpl.status, 200);
+    assert.equal((await t.call('POST', `/api/projects/subtitle/${p.data.id}/apply`, tpl.data.settings, tok)).status, 200);
+    const search = await t.call('GET', '/api/search?q=이름', undefined, tok);
+    assert.ok(search.data.results.some((r) => r.type === 'project'));
+    const usage = await t.call('GET', '/api/usage', undefined, tok);
+    assert.ok(usage.data.storage.files >= 1);
+    const acts = await t.call('GET', '/api/activities', undefined, tok);
+    assert.ok(acts.data.queue && acts.data.counts);
+    // 알림 삭제
+    await t.call('POST', '/api/admin/notices', { title: '공지', body: '내용', broadcast: true }, admin);
+    const n1 = await t.call('GET', '/api/notifications', undefined, tok);
+    assert.ok(n1.data.length >= 1);
+    assert.ok((await t.call('POST', '/api/notifications/delete', { ids: [n1.data[0].id] }, tok)).data.removed >= 1);
+    // 결제 설정/주문 (테스트 키) · 가짜 결제 차단
+    const cfg = await t.call('GET', '/api/billing/config');
+    assert.equal(cfg.status, 200);
+    if (cfg.data.toss.enabled) { const o = await t.call('POST', '/api/billing/orders', { planId: 'starter', region: 'domestic' }, tok); assert.equal(o.status, 200); assert.equal(o.data.currency, 'KRW'); assert.equal((await t.call('POST', '/api/billing/toss/confirm', { paymentKey: 'x', orderId: o.data.id, amount: 1 }, tok)).status, 400); assert.equal((await t.call('GET', '/api/admin/orders', undefined, admin)).data.length, 1); }
+    assert.equal((await t.call('POST', '/api/billing/orders', { planId: 'free' }, tok)).status, 400);
+    // 공유 링크 공개 조회
+    assert.equal((await t.call('GET', '/api/share/nope')).status, 404);
+    // 클라이언트 오류 보고 · 비밀번호 재설정 요청 · 관리자 시스템/오류/백업/저장공간
+    assert.equal((await t.call('POST', '/api/client-errors', { message: 'TypeError: x', route: '#/x' }, tok)).data.ok, true);
+    assert.equal((await t.call('POST', '/api/auth/reset-request', { email: 'plat@test.com' })).data.ok, true);
+    assert.equal((await t.call('POST', '/api/auth/reset-request', { email: 'nobody@test.com' })).status, 404);
+    const sys = await t.call('GET', '/api/admin/system', undefined, admin);
+    assert.equal(sys.data.api.ok, true);
+    const errs = await t.call('GET', '/api/admin/errors?source=client', undefined, admin);
+    assert.ok(errs.data.items.length >= 1 && errs.data.stats.client >= 1);
+    assert.ok((await t.call('GET', '/api/admin/storage', undefined, admin)).data.some((r) => r.userId === uid));
+    const bk = await t.call('POST', '/api/admin/backups', {}, admin);
+    assert.equal(bk.status, 200);
+    assert.ok((await t.call('GET', '/api/admin/backups', undefined, admin)).data.items.length >= 1);
+    assert.equal((await t.call('POST', `/api/admin/backups/${encodeURIComponent(bk.data.id)}/restore`, { merge: true }, admin)).status, 200);
+    assert.equal((await t.call('GET', '/api/admin/activities', undefined, admin)).status, 200);
+    // 정적: manifest · 서비스 워커 · 아이콘 · SEO 메타
+    for (const f of ['/manifest.webmanifest', '/sw.js', '/icons/icon-192.png', '/js/pages-workspace.js']) assert.equal((await fetch(t.base + f)).status, 200, f);
+    const home = await (await fetch(`${t.base}/`)).text();
+    assert.match(home, /og:title/); assert.match(home, /rel="canonical"/); assert.match(home, /twitter:card/);
+  } finally { await t.close(); }
 });
