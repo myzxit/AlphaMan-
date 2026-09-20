@@ -1,0 +1,23 @@
+{
+  "name": "alphaman",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AlphaMan - AI 하이라이트 쇼츠 자동 제작(AlphaCut) + AI 자막/디스커버리(Pixeling) 통합 플랫폼. 웹사이트 버전과 프로그램(데스크톱) 버전이 동일한 코어를 공유합니다.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "web": "node apps/server/bin/alphaman-server.js",
+    "start": "node apps/server/bin/alphaman-server.js",
+    "desktop": "npm run start --workspace=@alphaman/desktop",
+    "desktop:build": "npm run build --workspace=@alphaman/desktop",
+    "test": "node --test \"packages/core/test/*.test.js\" \"apps/server/test/*.test.js\"",
+    "check": "node scripts/check-syntax.mjs"
+  },
+  "license": "UNLICENSED"
+}
