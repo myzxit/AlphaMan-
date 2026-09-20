@@ -1,6 +1,7 @@
 # AlphaMan 웹사이트 버전 (영구 데이터 볼륨 포함)
 FROM node:22-alpine
-RUN apk add --no-cache ffmpeg
+# ffmpeg: 실제 렌더링 · yt-dlp: 유튜브 링크의 원본 자막(대본) 가져오기
+RUN apk add --no-cache ffmpeg yt-dlp
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/core/package.json packages/core/

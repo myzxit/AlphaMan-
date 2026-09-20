@@ -54,7 +54,7 @@ export function buildApi(app) {
     if (ctx.body.uploadId) return app.shorts.createFromUpload(user.id, ctx.body);
     if (ctx.body.localPath && app.platform === 'desktop') {
       const up = app.registerUpload(user.id, { filename: path.basename(ctx.body.localPath), mimeType: 'video/mp4', size: fs.statSync(ctx.body.localPath).size, path: ctx.body.localPath });
-      return app.shorts.createFromUpload(user.id, { uploadId: up.id, options: ctx.body.options });
+      return app.shorts.createFromUpload(user.id, { uploadId: up.id, options: ctx.body.options, transcript: ctx.body.transcript, transcriptText: ctx.body.transcriptText });
     }
     return app.shorts.createFromYoutube(user.id, ctx.body);
   });
@@ -65,7 +65,7 @@ export function buildApi(app) {
   r.post('/api/shorts/clips/:id/render', async (ctx) => app.shorts.rerender(auth(ctx).id, ctx.params.id));
   r.get('/api/shorts/clips/:id/export', async (ctx) => {
     const out = app.shorts.exportClip(auth(ctx).id, ctx.params.id, ctx.query.format || 'mp4');
-    if (out.file && fs.existsSync(out.file)) return { _file: out.file, mime: out.mime, filename: `${ctx.params.id}.mp4` };
+    if (out.file && fs.existsSync(out.file)) return { _file: out.file, mime: out.mime, filename: `${ctx.params.id}.mp4`, inline: ctx.query.inline === '1' };
     if (out.body != null) return { _raw: out.body, mime: out.mime, filename: `${ctx.params.id}.${out.ext}` };
     return { rendered: false, plan: out.plan, clip: out.clip, message: 'ffmpeg 이 설치된 환경(프로그램 버전)에서 실제 MP4 가 렌더링됩니다.' };
   });
@@ -74,6 +74,7 @@ export function buildApi(app) {
   r.get('/api/longform/jobs', async (ctx) => app.longform.list(auth(ctx).id));
   r.post('/api/longform/jobs', async (ctx) => app.longform.create(auth(ctx).id, ctx.body));
   r.get('/api/longform/jobs/:id', async (ctx) => app.longform.get(auth(ctx).id, ctx.params.id));
+  r.delete('/api/longform/jobs/:id', async (ctx) => ({ ok: app.longform.remove(auth(ctx).id, ctx.params.id) }));
 
   // ---- AI 재구성 (리믹스) ----
   r.get('/api/remix/defaults', async () => app.remix.defaults());
@@ -94,8 +95,37 @@ export function buildApi(app) {
     const fmt = ctx.query.format || 'mp4';
     if (fmt === 'ass') return { _raw: j.result.render.subtitleASS || '', mime: 'text/x-ssa', filename: `${j.id}.ass` };
     if (fmt === 'json') return { _raw: JSON.stringify(j.result, null, 2), mime: 'application/json', filename: `${j.id}.json` };
-    if (j.result.render?.rendered && fs.existsSync(j.result.render.output)) return { _file: j.result.render.output, mime: 'video/mp4', filename: `${j.id}.mp4` };
+    if (j.result.render?.rendered && fs.existsSync(j.result.render.output)) return { _file: j.result.render.output, mime: 'video/mp4', filename: `${j.id}.mp4`, inline: ctx.query.inline === '1' };
     return { rendered: false, plan: j.result.render?.plan || null, message: 'ffmpeg 이 설치된 환경(프로그램 버전)에서 실제 MP4 가 렌더링됩니다.' };
+  });
+
+  // ---- 보관함 (내가 만든 영상) + 미리보기 ----
+  r.get('/api/library', async (ctx) => app.library.list(auth(ctx).id, ctx.query));
+  r.post('/api/library/sync', async (ctx) => ({ added: app.library.sync(auth(ctx).id) }));
+  r.get('/api/library/:id', async (ctx) => app.library.detail(auth(ctx).id, ctx.params.id));
+  r.patch('/api/library/:id', async (ctx) => app.library.update(auth(ctx).id, ctx.params.id, ctx.body));
+  r.delete('/api/library/:id', async (ctx) => ({ ok: app.library.remove(auth(ctx).id, ctx.params.id, { deleteFile: ctx.query.deleteFile === '1' }) }));
+  r.get('/api/library/:id/video', async (ctx) => {
+    const file = app.library.videoFile(auth(ctx).id, ctx.params.id);
+    if (!file) throw new ApiError(404, '아직 렌더된 MP4 가 없습니다. 미리보기는 원본 영상을 타임라인대로 이어서 재생합니다.');
+    return { _file: file, mime: 'video/mp4', filename: `${ctx.params.id}.mp4`, inline: ctx.query.download !== '1' };
+  });
+  r.get('/api/preview/:kind/:refId', async (ctx) => app.library.previewSpec(auth(ctx).id, ctx.params.kind, ctx.params.refId));
+  // 업로드한 원본 스트리밍 (미리보기 플레이어 · 브라우저 대본 추출용). 본인 파일만.
+  r.get('/api/uploads/:id/stream', async (ctx) => {
+    const up = app.store.get('uploads', ctx.params.id);
+    if (!up || up.userId !== auth(ctx).id) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+    if (!fs.existsSync(up.path)) throw new ApiError(410, '원본 파일이 더 이상 서버에 없습니다 (서버리스 환경은 업로드 파일을 오래 보관하지 않습니다). 다시 업로드하거나 프로그램 버전을 사용해주세요.');
+    return { _file: up.path, mime: up.mimeType || 'video/mp4', filename: up.filename, inline: true };
+  });
+  // 프로그램(데스크톱) 버전 전용: 컴퓨터/USB 의 로컬 영상 스트리밍
+  r.get('/api/local/stream', async (ctx) => {
+    auth(ctx);
+    if (app.platform !== 'desktop') throw new ApiError(403, '프로그램 버전에서만 사용할 수 있습니다.');
+    const p = String(ctx.query.path || '');
+    if (!p || !fs.existsSync(p) || fs.statSync(p).isDirectory()) throw new ApiError(404, '파일을 찾을 수 없습니다.');
+    const ext = path.extname(p).toLowerCase();
+    return { _file: p, mime: { '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4' }[ext] || 'application/octet-stream', filename: path.basename(p), inline: true };
   });
 
   // ---- 내 목소리 TTS ----
@@ -123,7 +153,7 @@ export function buildApi(app) {
   r.post('/api/subtitles/projects', async (ctx) => {
     const user = auth(ctx);
     if (ctx.body.uploadId) return app.subtitles.createFromUpload(user.id, ctx.body);
-    if (ctx.body.localPath && app.platform === 'desktop') return app.subtitles.createFromLocalPath(user.id, { filePath: ctx.body.localPath, language: ctx.body.language, premium: ctx.body.premium });
+    if (ctx.body.localPath && app.platform === 'desktop') return app.subtitles.createFromLocalPath(user.id, { filePath: ctx.body.localPath, language: ctx.body.language, premium: ctx.body.premium, transcript: ctx.body.transcript, transcriptText: ctx.body.transcriptText });
     return app.subtitles.createFromUrl(user.id, ctx.body);
   });
   r.get('/api/subtitles/projects/:id', async (ctx) => app.subtitles.get(auth(ctx).id, ctx.params.id));

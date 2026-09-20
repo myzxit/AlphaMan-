@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AlphaMan, ADMIN_ACCOUNT, validateVideoMeta, parseYoutubeUrl, toSRT, toVTT, toASS, semanticSplit, nextOccurrences, ApiError } from '../src/index.js';
 
 process.env.ALPHAMAN_AI = 'off';
+process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
 
 function app() { return new AlphaMan({ memory: true, platform: 'test' }); }
@@ -305,5 +306,92 @@ test('내 목소리 TTS: 샘플 업로드 → 프로필 → 합성, 쇼츠 후�
   assert.equal(done.result.narration.voiceProfileId, profile.id);
   a.voice.remove(user.id, profile.id);
   assert.equal(a.voice.list(user.id).length, 0);
+  a.close();
+});
+
+test('원본 대본 그대로: 붙여넣은 대본 형식 해석(SRT · 유튜브 스크립트 · [mm:ss.s] · 문장), 제공된 대본이 자막에 그대로 쓰이고, 추정 대본 금지 시 422', async () => {
+  const { parseTranscriptText } = await import('../src/index.js');
+  const srt = parseTranscriptText('1\n00:00:01,000 --> 00:00:03,500\n안녕하세요 오늘은\n\n2\n00:00:03,500 --> 00:00:06,000\n이 영상에서는 세 가지를 다룹니다\n');
+  assert.equal(srt.length, 2); assert.equal(srt[0].text, '안녕하세요 오늘은'); assert.equal(srt[1].start, 3.5);
+  const yt = parseTranscriptText('0:00\n안녕하세요 오늘은\n0:04\n이 영상에서는 세 가지를 다룹니다\n1:02\n마지막 정리입니다', 70);
+  assert.deepEqual(yt.map((s) => [s.start, s.end, s.text]), [[0, 4, '안녕하세요 오늘은'], [4, 62, '이 영상에서는 세 가지를 다룹니다'], [62, 68, '마지막 정리입니다']]);
+  const browser = parseTranscriptText('[00:00.0] 안녕하세요 오늘은\n[00:04.5] 이 영상에서는', 30);
+  assert.equal(browser[1].start, 4.5);
+  const plain = parseTranscriptText('첫 문장입니다. 두 번째 문장입니다! 세 번째?', 30);
+  assert.equal(plain.length, 3); assert.equal(plain[2].end, 30);
+
+  const a = app();
+  const { user } = a.auth.signup({ email: 'exact@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 100, 'test');
+  // 브라우저 Whisper 세그먼트를 제공하면 자막 텍스트가 원본 대본과 완전히 같다
+  const transcript = [{ start: 0, end: 4, text: '안녕하세요 오늘은 알파맨을 소개합니다' }, { start: 4, end: 9, text: '핵심은 세 가지입니다' }, { start: 9, end: 15, text: '첫째 링크만 넣으면 됩니다' }, { start: 15, end: 22, text: '둘째 자막이 원본과 똑같습니다' }, { start: 22, end: 30, text: '셋째 보관함에 저장됩니다' }];
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 60, clipCount: 1 }, transcript });
+  const done = await waitFor(() => { const j = a.store.get('jobs', job.id); return j.status === 'done' ? j : null; });
+  assert.equal(done.transcriptExact, true); assert.equal(done.transcriptEngine, 'client');
+  const clip = a.shorts.getJob(user.id, job.id).clips[0];
+  const original = transcript.map((s) => s.text).join(' ').replace(/\s+/g, '');
+  const subtitleText = clip.subtitles.map((s) => s.text).join(' ').replace(/\s+/g, '');
+  assert.ok(original.includes(subtitleText) && subtitleText.length > 0, '자막은 원본 대본의 일부를 그대로 담아야 한다');
+  // 붙여넣은 대본(transcriptText)도 그대로
+  const proj = await a.subtitles.createFromUrl(user.id, { url: 'https://youtu.be/abcdefghijk', transcriptText: '0:00\n첫 번째 줄 그대로\n0:03\n두 번째 줄 그대로' });
+  assert.equal(proj.transcriptExact, true); assert.equal(proj.engine, 'pasted-transcript');
+  assert.deepEqual(proj.segments.map((s) => s.text), ['첫 번째 줄 그대로', '두 번째 줄 그대로']);
+  // 추정 대본을 금지하면(기본값) 대본 없이 링크만으로는 422 안내
+  process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '0';
+  try {
+    await assert.rejects(() => a.subtitles.createFromUrl(user.id, { url: 'https://youtu.be/abcdefghijk' }), (err) => err.status === 422 && /스크립트 표시/.test(err.message));
+    assert.equal(a.subtitles.list(user.id).length, 1, '실패한 프로젝트는 남지 않는다');
+  } finally { process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1'; }
+  a.close();
+});
+
+test('보관함: 쇼츠·재구성·롱폼 완료 시 자동 저장, 미리보기 스펙, 즐겨찾기/이름 수정, 제거, 작업 삭제 시 함께 삭제', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'lib@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 200, 'test');
+  assert.equal(a.library.list(user.id).items.length, 0);
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 240 } });
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  let { items, stats } = a.library.list(user.id);
+  assert.equal(items.length, 2); assert.equal(stats.byKind.shorts, 2);
+  assert.ok(items.every((i) => i.kind === 'shorts' && i.jobId === job.id && i.durationSec > 0 && i.ratio === '9:16'));
+  const detail = a.library.detail(user.id, items[0].id);
+  assert.equal(detail.preview.kind, 'shorts'); assert.equal(detail.preview.source.type, 'youtube'); assert.equal(detail.preview.source.videoId, 'abcdefghijk');
+  assert.ok(detail.preview.items.length >= 1 && detail.preview.items[0].newStart === 0);
+  assert.ok(detail.preview.subtitles.length > 0); assert.equal(detail.link, `#/studio/${job.id}`);
+  // 재구성
+  const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 120 } });
+  await waitFor(() => a.store.get('remixJobs', remix.id).status === 'done', 8000);
+  ({ items, stats } = a.library.list(user.id));
+  assert.equal(stats.byKind.remix, 1);
+  const rItem = items.find((i) => i.kind === 'remix');
+  const rSpec = a.library.previewSpec(user.id, 'remix', remix.id);
+  assert.ok(rSpec.items.some((t) => t.kind === 'card') && rSpec.durationSec >= 57);
+  // 롱폼
+  const lf = await a.longform.create(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 300 } });
+  await waitFor(() => a.store.get('longformJobs', lf.id).status === 'done');
+  ({ items, stats } = a.library.list(user.id));
+  assert.equal(stats.byKind.longform, 1); assert.equal(stats.total, 4);
+  const lSpec = a.library.previewSpec(user.id, 'longform', lf.id);
+  assert.ok(lSpec.items.length >= 1 && lSpec.chapters.length >= 1);
+  // 편집
+  const fav = a.library.update(user.id, rItem.id, { favorite: true, title: '내 첫 재구성', tags: ['테스트'] });
+  assert.equal(fav.favorite, true); assert.equal(fav.title, '내 첫 재구성');
+  assert.equal(a.library.list(user.id, { favorite: '1' }).items.length, 1);
+  assert.equal(a.library.list(user.id, { q: '첫 재구성' }).items.length, 1);
+  // 재구성 결과 수정(제목)도 보관함에 반영되고 즐겨찾기는 유지
+  a.remix.updateResult(user.id, remix.id, { title: '수정된 제목' });
+  const after = a.library.list(user.id).items.find((i) => i.kind === 'remix');
+  assert.equal(after.title, '수정된 제목'); assert.equal(after.favorite, true);
+  // 다른 사용자는 볼 수 없다
+  const other = a.auth.signup({ email: 'other@test.com', password: 'secret1' }).user;
+  assert.throws(() => a.library.get(other.id, rItem.id), /찾을 수 없습니다/);
+  // 제거 · 작업 삭제 시 연동
+  a.library.remove(user.id, rItem.id);
+  assert.equal(a.library.list(user.id).stats.byKind.remix, 1, '원본 작업이 남아 있으면 다시 동기화된다');
+  a.remix.remove(user.id, remix.id);
+  assert.equal(a.library.list(user.id).stats.byKind.remix, 0);
+  a.shorts.deleteJob(user.id, job.id);
+  assert.equal(a.library.list(user.id).stats.byKind.shorts, 0);
   a.close();
 });

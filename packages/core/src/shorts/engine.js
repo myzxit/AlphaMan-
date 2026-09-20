@@ -26,8 +26,8 @@ export const DEFAULT_OPTIONS = Object.freeze({
 const STEPS = ['queued', 'downloading', 'transcribing', 'analyzing', 'editing', 'rendering', 'done'];
 
 export class ShortsEngine {
-  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir, voice = null }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice;
+  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir, voice = null, library = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.library = library;
     this.notifications = notifications;
     this.uploadsDir = uploadsDir; this.outputDir = outputDir;
     this.timers = new Map();
@@ -39,24 +39,25 @@ export class ShortsEngine {
   ratios() { return RATIOS; }
 
   // 1) 작업 생성 --------------------------------------------------------------
-  async createFromYoutube(userId, { url, options = {} }) {
+  // transcript(브라우저 Whisper 세그먼트) / transcriptText(붙여넣은 대본)는 원본과 똑같은 자막을 위해 옵션으로 함께 저장한다
+  async createFromYoutube(userId, { url, options = {}, transcript = null, transcriptText = '' }) {
     const yt = parseYoutubeUrl(url);
     const meta = await fetchYoutubeMeta(yt.id);
     const durationSec = meta.durationSec || Number(options.estimatedDurationSec) || 600;
     return this._create(userId, {
       source: { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec },
-      options,
+      options: withTranscript(options, transcript, transcriptText),
     });
   }
 
-  async createFromUpload(userId, { uploadId, options = {} }) {
+  async createFromUpload(userId, { uploadId, options = {}, transcript = null, transcriptText = '' }) {
     const upload = this.store.get('uploads', uploadId);
     if (!upload || upload.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
     const meta = await probe(upload.path);
     validateVideoMeta({ filename: upload.filename, mimeType: upload.mimeType, ...meta });
     return this._create(userId, {
       source: { type: 'file', uploadId, path: upload.path, title: path.parse(upload.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height, thumbnail: null },
-      options,
+      options: withTranscript(options, transcript, transcriptText),
     });
   }
 
@@ -93,7 +94,7 @@ export class ShortsEngine {
     this._log(jobId, 'downloading', 8, source.type === 'youtube' ? '유튜브 영상을 가져오는 중' : '업로드 파일을 준비하는 중');
     await this._wait(400);
     this._log(jobId, 'transcribing', 25, '음성을 인식해 대본을 만드는 중 (Whisper)');
-    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: options.language, title: source.title });
+    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: options.language, title: source.title, source, transcript: options.transcript || null, transcriptText: options.transcriptText || '' });
     await this._wait(400);
     this._log(jobId, 'analyzing', 45, 'AI가 하이라이트 구간을 찾는 중');
     const genre = options.genre && GENRES.some((g) => g.id === options.genre) ? options.genre : detectGenre(source.title, stt.segments.map((s) => s.text).join(' '));
@@ -106,13 +107,15 @@ export class ShortsEngine {
       const clip = await this.buildClip({ job, index: i, highlight: h, segments: stt.segments, template, genre });
       clipIds.push(clip.id);
     }
-    this.store.update('jobs', jobId, { clipIds, genre, transcriptEngine: stt.engine, segmentCount: stt.segments.length });
+    this.store.update('jobs', jobId, { clipIds, genre, transcriptEngine: stt.engine, transcriptExact: stt.exact !== false, segmentCount: stt.segments.length });
     await this._wait(300);
     this._log(jobId, 'rendering', 85, '클립을 렌더링하는 중');
     for (const id of clipIds) await this.render(id);
     this._log(jobId, 'done', 100, `쇼츠 ${clipIds.length}개 제작 완료`);
-    this.store.update('jobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
-    this.notifications?.push(job.userId, { type: 'shorts.done', title: '쇼츠 제작 완료', body: `"${source.title}" 에서 쇼츠 ${clipIds.length}개가 완성됐어요.`, link: `#/studio/${jobId}` });
+    const done = this.store.update('jobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
+    // 보관함에 자동 저장 (완성된 클립마다 한 항목)
+    if (this.library) this.library.addShortsJob(done, clipIds.map((id) => this.store.get('clips', id)).filter(Boolean));
+    this.notifications?.push(job.userId, { type: 'shorts.done', title: '쇼츠 제작 완료', body: `"${source.title}" 에서 쇼츠 ${clipIds.length}개가 완성됐어요. 보관함에서 미리 볼 수 있어요.`, link: `#/studio/${jobId}` });
   }
 
   _fail(jobId, err) {
@@ -241,7 +244,9 @@ export class ShortsEngine {
     } else {
       result = { rendered: false, plan: { note: '유튜브 원본은 yt-dlp 로 내려받은 뒤 렌더링됩니다.', ratio: clip.ratio, start: clip.start, end: clip.end } };
     }
-    return this.store.update('clips', clipId, { status: 'ready', render: { ...result, subtitleASS: ass, templateId: template.id, renderedAt: new Date().toISOString() } });
+    const updated = this.store.update('clips', clipId, { status: 'ready', render: { ...result, subtitleASS: ass, templateId: template.id, renderedAt: new Date().toISOString() } });
+    if (this.library && job.status === 'done') this.library.addShortsJob(job, [updated]); // 재렌더/편집 후 보관함 항목 갱신
+    return updated;
   }
 
   // 6) 결과 조회/편집/재생성/내보내기 ---------------------------------------------
@@ -282,7 +287,7 @@ export class ShortsEngine {
     if (job.status !== 'done' && job.status !== 'failed') throw new ApiError(409, '진행 중인 작업은 재생성할 수 없습니다.');
     const half = Math.round((job.minutesCharged / 2) * 100) / 100;
     this.credits.charge(userId, half, `쇼츠 재생성(50%): ${job.source.title}`, { jobId });
-    for (const id of job.clipIds) this.store.remove('clips', id);
+    for (const id of job.clipIds) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); }
     this.store.update('jobs', jobId, { status: 'queued', step: 'queued', progress: 0, clipIds: [], error: null, regenerations: job.regenerations + 1, log: [{ at: new Date().toISOString(), step: 'queued', message: '재생성 요청 (이용권 50% 차감)' }] });
     this._schedule(jobId);
     return this.store.get('jobs', jobId);
@@ -309,7 +314,7 @@ export class ShortsEngine {
   deleteJob(userId, jobId) {
     const job = this.store.get('jobs', jobId);
     if (!job || job.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.');
-    for (const id of job.clipIds) this.store.remove('clips', id);
+    for (const id of job.clipIds) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); }
     this.store.remove('jobs', jobId);
     return true;
   }
@@ -317,6 +322,12 @@ export class ShortsEngine {
 
 function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
 function round(n) { return Math.round(n * 100) / 100; }
+export function withTranscript(options, transcript, transcriptText) {
+  const out = { ...options };
+  if (Array.isArray(transcript) && transcript.length) out.transcript = transcript;
+  if (transcriptText && String(transcriptText).trim()) out.transcriptText = String(transcriptText);
+  return out;
+}
 function makeTitle(text) {
   const t = text.replace(/[.!?。]+$/, '').trim();
   const short = t.length > 22 ? `${t.slice(0, 20)}…` : t;

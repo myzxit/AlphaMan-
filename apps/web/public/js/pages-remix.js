@@ -1,6 +1,8 @@
 // AI 재구성(리믹스) + 내 목소리 TTS 페이지
 import { get, post, patch, del, uploadFile, downloadUrl, getToken } from './api.js';
 import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, extractVoiceSample, qs, qsa, on } from './ui.js';
+import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
+import { mountPlayer } from './player.js';
 
 const auth = (fn) => Object.assign(fn, { requiresAuth: true });
 const statusBadge = (s) => `<span class="badge ${s === 'done' ? 'badge-success' : s === 'failed' ? 'badge-danger' : 'badge-warn'}">${{ done: '완료', failed: '실패', queued: '대기', processing: '진행 중' }[s] || esc(s)}</span>`;
@@ -16,6 +18,7 @@ export const remix = auth(async ({ view, state, navigate }) => {
       <div id="r-youtube"><div class="field"><input id="r-url" placeholder="YouTube 롱폼 / YouTube Shorts / TikTok / Reels 링크" /><div class="tiny muted">원본이 목표보다 길면 핵심 구간만 골라 줄이고, 쇼츠처럼 짧으면 챕터 카드·하이라이트 리플레이·슬로모션으로 목표 길이까지 늘립니다.</div></div><div class="field"><label>예상 길이(분) - 메타데이터를 가져오지 못할 때 사용</label><input id="r-est" type="number" min="1" value="10" /></div></div>
       <div id="r-file" class="hidden"><div class="dropzone" id="r-drop">MP4, MOV, WebM 파일을 끌어다 놓거나 클릭 <input type="file" id="r-file-input" accept="video/*" class="hidden" /></div><div id="r-file-meta" class="small muted" style="margin-top:8px"></div><div class="progress" style="margin-top:8px"><div id="r-upload-bar" style="width:0"></div></div></div>
       <div id="r-local" class="hidden"><button class="btn" id="r-pick-local">파일 선택 (프로그램 전용)</button><div id="r-local-path" class="small muted"></div></div>
+      ${raw(transcriptPanel('r', { info: state.info }))}
 
       <h3 style="margin-top:20px">2. 참고 영상 링크 (선택) — "이런 식으로 편집해줘"</h3>
       <div class="field"><input id="r-ref" placeholder="참고할 영상 링크 (YouTube 롱폼 / Shorts / TikTok / Reels)" /><div class="tiny muted">비워두면 장르에 맞게 자동 편집합니다. 넣으면 참고 영상의 섹션 구조와 구간 길이 비율, 후킹 길이, 호흡(컷 속도), 자막 스타일·위치, 효과음 밀도, 전환, 색감, 화면 비율, 배경음 무드를 분석해 그 영상과 비슷하게 재구성합니다.</div></div>
@@ -52,6 +55,7 @@ export const remix = auth(async ({ view, state, navigate }) => {
       <div class="card small muted"><b>어떻게 동작하나요?</b><ol style="padding-left:18px;margin:6px 0"><li>원본 가져오기 → 참고 영상 스타일 분석</li><li>음성 인식으로 대본 추출</li><li>박힌 자막·효과음·배경음 제거 (음원 분리)</li><li>AI 가 목표 길이에 맞게 구간 선별·재배열</li><li>새 자막·효과음·배경음·전환·내레이션 입히기</li><li>렌더링 (ffmpeg 설치 시 실제 MP4)</li></ol>원본 길이만큼 이용권이 차감되고, 다시 만들기는 절반입니다.</div></div></div>`;
 
   let mode = 'youtube'; let uploadId = null; let localPath = null;
+  const tc = transcriptController('r', { language: () => qs('#r-lang').value });
   qsa('#r-tabs .tab').forEach((t) => { t.onclick = () => { mode = t.dataset.tab; qsa('#r-tabs .tab').forEach((x) => x.classList.remove('active')); t.classList.add('active'); ['youtube', 'file', 'local'].forEach((m) => qs(`#r-${m}`).classList.toggle('hidden', m !== mode)); }; });
   qs('#r-len').oninput = (e) => { qs('#r-len-label').textContent = `${e.target.value}분`; };
   const drop = qs('#r-drop'); const input = qs('#r-file-input');
@@ -59,14 +63,15 @@ export const remix = auth(async ({ view, state, navigate }) => {
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && pick(e.dataTransfer.files[0]); };
   input.onchange = () => input.files[0] && pick(input.files[0]);
   async function pick(file) {
-    try { const meta = await readVideoMeta(file); qs('#r-file-meta').textContent = `${file.name} · ${fmtTime(meta.durationSec)} · 업로드 중...`; const up = await uploadFile(file, (p) => { qs('#r-upload-bar').style.width = `${p}%`; }); uploadId = up.id; qs('#r-file-meta').textContent = `${file.name} · ${fmtTime(meta.durationSec)} · 업로드 완료 · 필요 이용권 ${(meta.durationSec / 60).toFixed(1)}분`; }
+    try { const meta = await readVideoMeta(file); qs('#r-file-meta').textContent = `${file.name} · ${fmtTime(meta.durationSec)} · 업로드 중...`; tc.fromFile(file); const up = await uploadFile(file, (p) => { qs('#r-upload-bar').style.width = `${p}%`; }); uploadId = up.id; qs('#r-file-meta').textContent = `${file.name} · ${fmtTime(meta.durationSec)} · 업로드 완료 · 필요 이용권 ${(meta.durationSec / 60).toFixed(1)}분`; }
     catch (err) { uploadId = null; toast(err.message, 'error', 6000); }
   }
-  if (window.alphaman?.pickVideo) qs('#r-pick-local').onclick = async () => { const p = await window.alphaman.pickVideo(); if (p) { localPath = p; qs('#r-local-path').textContent = p; } };
+  if (window.alphaman?.pickVideo) qs('#r-pick-local').onclick = async () => { const p = await window.alphaman.pickVideo(); if (p) { localPath = p; qs('#r-local-path').textContent = p; tc.fromLocalPath(p); } };
   qs('#r-go').onclick = async (e) => {
+    if (tc.state.busy) return toast('원본 대본 추출이 끝날 때까지 잠시 기다려주세요.', 'info');
     const options = { targetMinutes: Number(qs('#r-len').value), template: qs('#r-template').value, pacing: qs('#r-pacing').value, ratio: qs('#r-ratio').value, transitions: qs('#r-trans').value, colorGrade: qs('#r-color').value, language: qs('#r-lang').value, narration: qs('#r-narr').value, voiceProfileId: qs('#r-voice').value || null };
     qsa('[data-opt]').forEach((c) => { options[c.dataset.opt] = c.checked; });
-    const body = { options, referenceUrl: qs('#r-ref').value.trim() || null, rightsConfirmed: qs('#r-rights').checked };
+    const body = { options, referenceUrl: qs('#r-ref').value.trim() || null, rightsConfirmed: qs('#r-rights').checked, ...tc.payload() };
     if (mode === 'youtube') { body.url = qs('#r-url').value; body.options.estimatedDurationSec = Number(qs('#r-est').value || 10) * 60; if (!body.url.trim()) return toast('원본 영상 링크를 입력해주세요.', 'error'); }
     else if (mode === 'file') { if (!uploadId) return toast('먼저 영상 파일을 업로드해주세요.', 'error'); body.uploadId = uploadId; }
     else { if (!localPath) return toast('파일을 선택해주세요.', 'error'); body.localPath = localPath; }
@@ -83,8 +88,9 @@ export const remixJob = auth(async ({ view, params, navigate }) => {
   const draw = () => {
     const r = job.result;
     view.innerHTML = html`<div class="row row-between"><div><a href="#/remix" class="small">← AI 재구성</a><h1>${r?.plan?.title || job.source.title}</h1><div class="muted small">원본: ${job.source.title} · ${fmtTime(job.source.durationSec)} · 목표 ${job.options.targetMinutes}분 · ${job.minutesCharged}분 차감${job.reference ? raw(` · 참고: <a href="${esc(job.reference.url)}" target="_blank" rel="noopener">${esc(job.reference.title)}</a>`) : ''}</div></div>
-      <div class="row"><button class="btn" id="rj-regen" ${job.status === 'done' || job.status === 'failed' ? '' : 'disabled'}>다시 만들기 (${(job.minutesCharged / 2).toFixed(1)}분)</button><button class="btn btn-danger" id="rj-del">삭제</button></div></div>
+      <div class="row">${job.status === 'done' ? raw('<a class="btn" href="#/library?kind=remix">📁 보관함</a>') : ''}<button class="btn" id="rj-regen" ${job.status === 'done' || job.status === 'failed' ? '' : 'disabled'}>다시 만들기 (${(job.minutesCharged / 2).toFixed(1)}분)</button><button class="btn btn-danger" id="rj-del">삭제</button></div></div>
       ${job.status !== 'done' ? raw(`<div class="card"><div class="row row-between"><b>${esc(stepNames[job.step] || job.step)}</b><span>${job.progress}%</span></div><div class="progress"><div style="width:${job.progress}%"></div></div><div class="log" style="margin-top:10px">${job.log.map((l) => `${esc(l.at.slice(11, 19))} [${esc(l.step)}] ${esc(l.message)}`).join('\n')}</div>${job.error ? `<p class="badge badge-danger">${esc(job.error)}</p>` : ''}</div>`) : raw(renderResult(job))}`;
+    if (job.status === 'done') { const host = qs('#rj-player'); if (host) get(`/api/preview/remix/${job.id}`).then((spec) => mountPlayer(host, spec)).catch((err) => { host.innerHTML = `<div class="tiny muted">미리보기를 불러오지 못했습니다: ${esc(err.message)}</div>`; }); }
     qs('#rj-regen').onclick = async () => { if (!(await confirmDialog(`다시 만들면 이용권 ${(job.minutesCharged / 2).toFixed(1)}분이 차감됩니다.`))) return; try { job = await post(`/api/remix/jobs/${job.id}/regenerate`); await window.AlphaManApp.refreshUser(); draw(); poll(); } catch (err) { toast(err.message, 'error'); } };
     qs('#rj-del').onclick = async () => { if (await confirmDialog('작업을 삭제할까요?')) { await del(`/api/remix/jobs/${job.id}`); navigate('/remix'); } };
     on(view, 'click', '[data-export]', async (e, t) => {
@@ -107,8 +113,9 @@ export const remixJob = auth(async ({ view, params, navigate }) => {
 function renderResult(job) {
   const r = job.result; const D = job.source.durationSec; const F = r.finalDurationSec || 1;
   const sp = r.styleProfile;
-  return `<div class="card"><div class="chips"><span class="chip">${esc(r.summary)}</span><span class="chip">장르 ${esc(r.genre)}</span><span class="chip">호흡 ${esc(r.plan.pacing)}</span><span class="chip">템플릿 ${esc(r.template.name)}</span><span class="chip">STT ${esc(r.transcriptEngine)}</span><span class="chip">계획 ${esc(r.plan.engine)}</span></div>
-    <div class="row" style="margin-top:10px"><button class="btn btn-primary" data-export="mp4">MP4 내보내기</button><button class="btn" data-export="ass">자막(ASS)</button><button class="btn" data-export="json">편집 데이터(JSON)</button></div></div>
+  return `<div class="card"><h3>▶ 완성본 미리보기</h3><div class="tiny muted">${r.render?.rendered ? '렌더된 MP4 를 재생합니다.' : '원본을 새 타임라인(원본 구간 · 리플레이 · 슬로모션 · 카드)대로 이어 재생하며 자막·후킹을 겹쳐 보여줍니다. ffmpeg 이 있는 프로그램 버전에서는 실제 MP4 가 렌더링됩니다.'}</div><div id="rj-player" class="preview-inline"><div class="muted">플레이어 준비 중...</div></div>
+    <div class="chips"><span class="chip">${esc(r.summary)}</span><span class="chip">장르 ${esc(r.genre)}</span><span class="chip">호흡 ${esc(r.plan.pacing)}</span><span class="chip">템플릿 ${esc(r.template.name)}</span><span class="chip">STT ${esc(r.transcriptEngine)}</span>${exactBadge(r.transcriptExact)}<span class="chip">계획 ${esc(r.plan.engine)}</span></div>
+    <div class="row" style="margin-top:10px"><button class="btn btn-primary" data-export="mp4">MP4 내보내기</button><button class="btn" data-export="ass">자막(ASS)</button><button class="btn" data-export="json">편집 데이터(JSON)</button><a class="btn" href="#/library?kind=remix">📁 보관함</a></div></div>
   <div class="split" style="margin-top:16px"><div class="col">
     <div class="card"><h3>구성</h3><div class="small"><b>후킹:</b> ${esc(r.plan.hook)}</div><div class="small muted">${esc(r.plan.description)}</div><ol class="small">${r.plan.outline.map((o) => `<li>${esc(o)}</li>`).join('')}</ol>
       <div class="tiny muted">원본 타임라인 (유지 구간)</div><div class="timeline">${r.plan.keep.map((k) => `<div class="seg" style="left:${(k.start / D) * 100}%;width:${Math.max(0.3, ((k.end - k.start) / D) * 100)}%" title="${esc(k.reason)}"></div>`).join('')}</div>

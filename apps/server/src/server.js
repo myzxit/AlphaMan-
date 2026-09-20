@@ -44,10 +44,7 @@ export function createRequestHandler(app, { webDir = DEFAULT_WEB_DIR } = {}) {
         }
         const ctx = { req, res, headers: req.headers, params: match.params, query: Object.fromEntries(url.searchParams), body, raw, token, user, app };
         const result = await match.handler(ctx);
-        if (result && result._file) {
-          res.writeHead(200, { 'Content-Type': result.mime, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}` });
-          return fs.createReadStream(result._file).pipe(res);
-        }
+        if (result && result._file) return sendFile(req, res, result);
         if (result && result._raw != null) {
           res.writeHead(200, { 'Content-Type': `${result.mime}; charset=utf-8`, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}` });
           return res.end(result._raw);
@@ -104,6 +101,25 @@ function readBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+// 파일 응답: 다운로드(attachment) 또는 미리보기 스트리밍(inline). Range 요청을 지원해 <video> 탐색(seek)이 된다.
+function sendFile(req, res, { _file: file, mime = 'application/octet-stream', filename = path.basename(file), inline = false }) {
+  if (!fs.existsSync(file)) return json(res, 404, { error: '파일을 찾을 수 없습니다.' });
+  const size = fs.statSync(file).size;
+  const disposition = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  const range = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+  if (range && size > 0) {
+    let start = range[1] === '' ? Math.max(0, size - Number(range[2])) : Number(range[1]);
+    let end = range[2] === '' || range[1] === '' ? size - 1 : Math.min(size - 1, Number(range[2]));
+    if (!(start <= end) || start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end(); }
+    res.writeHead(206, { 'Content-Type': mime, 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Accept-Ranges': 'bytes', 'Content-Disposition': disposition, 'Cache-Control': 'private, max-age=0' });
+    if (req.method === 'HEAD') return res.end();
+    return fs.createReadStream(file, { start, end }).pipe(res);
+  }
+  res.writeHead(200, { 'Content-Type': mime, 'Content-Length': size, 'Accept-Ranges': 'bytes', 'Content-Disposition': disposition, 'Cache-Control': 'private, max-age=0' });
+  if (req.method === 'HEAD') return res.end();
+  return fs.createReadStream(file).pipe(res);
 }
 
 function json(res, status, data) {

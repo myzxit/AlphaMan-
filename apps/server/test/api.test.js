@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createApp, createHttpServer } from '../src/server.js';
 
 process.env.ALPHAMAN_AI = 'off';
+process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
 
 async function boot() {
@@ -61,6 +62,25 @@ test('API: info, admin login, admin-only routes, user flow', async () => {
     assert.ok(proj.data.segments.length);
     const exp = await t.call('GET', `/api/subtitles/projects/${proj.data.id}/export?format=vtt`, undefined, userToken);
     assert.match(String(exp.data), /^WEBVTT/);
+
+    // 보관함 + 미리보기 + 원본 스트리밍(Range)
+    const lib = await t.call('GET', '/api/library', undefined, userToken);
+    assert.equal(lib.status, 200); assert.equal(lib.data.items.length, 2); assert.equal(lib.data.stats.byKind.shorts, 2);
+    const item = await t.call('GET', `/api/library/${lib.data.items[0].id}`, undefined, userToken);
+    assert.equal(item.data.preview.kind, 'shorts'); assert.ok(item.data.preview.items.length >= 1);
+    const fav = await t.call('PATCH', `/api/library/${lib.data.items[0].id}`, { favorite: true }, userToken);
+    assert.equal(fav.data.favorite, true);
+    const noVideo = await t.call('GET', `/api/library/${lib.data.items[0].id}/video`, undefined, userToken);
+    assert.equal(noVideo.status, 404);
+    const prev = await t.call('GET', `/api/preview/shorts/${full.data.clips[1].id}`, undefined, userToken);
+    assert.equal(prev.status, 200); assert.equal(prev.data.source.videoId, 'abcdefghijk');
+    const forbidden = await t.call('GET', `/api/preview/shorts/${full.data.clips[1].id}`, undefined, adminToken);
+    assert.equal(forbidden.status, 404);
+    const range = await fetch(`${t.base}/api/uploads/${up.data.id}/stream`, { headers: { authorization: `Bearer ${userToken}`, range: 'bytes=0-99' } });
+    assert.equal(range.status, 206); assert.equal(range.headers.get('content-length'), '100'); assert.match(range.headers.get('content-range'), /^bytes 0-99\//);
+    assert.match(range.headers.get('content-disposition'), /^inline/);
+    const local = await t.call('GET', '/api/local/stream?path=/etc/hosts', undefined, userToken);
+    assert.equal(local.status, 403);
 
     const disc = await t.call('GET', '/api/discovery/videos?type=shorts&regions=KR&sort_by=trend');
     assert.equal(disc.data.items.length, 10);

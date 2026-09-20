@@ -36,17 +36,19 @@ const SFX_LIBRARY = ['whoosh', 'pop', 'ding', 'boom', 'click', 'riser', 'swoosh'
 const BGM_LIBRARY = { education: 'lofi-focus', interview: 'warm-acoustic', info: 'upbeat-corporate', gaming: 'edm-drive', vlog: 'sunny-pop' };
 
 export class RemixEngine {
-  constructor({ store, credits, ai, translate, voice, notifications, outputDir }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.notifications = notifications; this.outputDir = outputDir;
+  constructor({ store, credits, ai, translate, voice, notifications, outputDir, library = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.notifications = notifications; this.outputDir = outputDir; this.library = library;
     this.speed = Number(process.env.ALPHAMAN_JOB_SPEED || 1);
   }
 
   defaults() { return { ...REMIX_DEFAULTS, limits: REMIX_LIMITS, templates: TEMPLATES.map((t) => ({ id: t.id, name: t.name })), sfx: SFX_LIBRARY, bgm: BGM_LIBRARY }; }
 
   // ---- 작업 생성 (링크 또는 파일 중 하나) ----
-  async create(userId, { url, uploadId, localPath, referenceUrl = null, options = {}, rightsConfirmed = false }) {
+  async create(userId, { url, uploadId, localPath, referenceUrl = null, options = {}, rightsConfirmed = false, transcript = null, transcriptText = '' }) {
     if (!rightsConfirmed) throw new ApiError(400, '재구성할 권리가 있는 영상(직접 제작했거나 사용 허가를 받은 영상)인지 확인해주세요.');
     const opts = { ...REMIX_DEFAULTS, ...options };
+    if (Array.isArray(transcript) && transcript.length) opts.transcript = transcript; // 브라우저에서 추출한 원본 대본
+    if (transcriptText && String(transcriptText).trim()) opts.transcriptText = String(transcriptText); // 붙여넣은 대본
     const target = Number(opts.targetMinutes);
     if (!(target >= REMIX_LIMITS.minMinutes && target <= REMIX_LIMITS.maxMinutes)) throw new ApiError(400, `목표 길이는 ${REMIX_LIMITS.minMinutes}~${REMIX_LIMITS.maxMinutes}분 사이여야 합니다.`);
     if (!['none', 'intro', 'full'].includes(opts.narration)) throw new ApiError(400, '내레이션 모드가 올바르지 않습니다.');
@@ -122,7 +124,7 @@ export class RemixEngine {
     }
 
     this._log(jobId, 'transcribing', 26, '원본 음성을 인식해 대본을 만드는 중');
-    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: opts.language, title: source.title });
+    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: opts.language, title: source.title, source, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' });
     const genre = detectGenre(source.title, stt.segments.map((s) => s.text).join(' '));
     await this._wait(300);
 
@@ -142,14 +144,15 @@ export class RemixEngine {
     const render = await this.render({ job, plan, rebuild, cleaning });
 
     const result = {
-      genre, styleProfile, cleaning, plan, ...rebuild, render, transcriptEngine: stt.engine,
+      genre, styleProfile, cleaning, plan, ...rebuild, render, transcriptEngine: stt.engine, transcriptExact: stt.exact !== false,
       originalDurationSec: source.durationSec, targetDurationSec: opts.targetMinutes * 60, finalDurationSec: plan.finalDurationSec,
       summary: `${Math.round(source.durationSec / 60)}분 원본 → ${Math.round(plan.finalDurationSec / 60)}분 재구성 · 구간 ${plan.keep.length}개 · 자막 ${rebuild.subtitles.length}줄 · 효과음 ${rebuild.sfx.length}개${rebuild.narration ? ` · 내레이션 ${rebuild.narration.lines.length}줄` : ''}`,
     };
     this.store.update('remixJobs', jobId, { result });
     this._log(jobId, 'done', 100, '재구성 완료');
-    this.store.update('remixJobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
-    this.notifications?.push(job.userId, { type: 'remix.done', title: 'AI 재구성 완료', body: result.summary, link: `#/remix/${jobId}` });
+    const done = this.store.update('remixJobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
+    if (this.library) this.library.addRemixJob(done); // 보관함 자동 저장
+    this.notifications?.push(job.userId, { type: 'remix.done', title: 'AI 재구성 완료', body: `${result.summary} · 보관함에서 미리 볼 수 있어요.`, link: `#/remix/${jobId}` });
   }
 
   // 참고 영상 → 편집 스타일 프로필. 타임라인이 그대로 따라 하는 항목: 섹션 구조·구간 길이 패턴·후킹 길이·호흡·자막 스타일/위치·
@@ -339,7 +342,7 @@ export class RemixEngine {
   // ---- 조회/편집/삭제 ----
   list(userId) { return this.store.find('remixJobs', (j) => j.userId === userId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
   get(userId, id) { const j = this.store.get('remixJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '재구성 작업을 찾을 수 없습니다.'); return j; }
-  remove(userId, id) { this.get(userId, id); return this.store.remove('remixJobs', id); }
+  remove(userId, id) { this.get(userId, id); this.library?.removeByRef('remix', id); return this.store.remove('remixJobs', id); }
 
   updateResult(userId, id, patch) {
     const j = this.get(userId, id);
@@ -349,7 +352,9 @@ export class RemixEngine {
     if (patch.subtitles) result.subtitles = patch.subtitles.map((s, i) => ({ id: s.id || `seg-${i + 1}`, start: Number(s.start), end: Number(s.end), text: String(s.text), words: s.words || [], animation: s.animation || 'none' }));
     if (patch.sfx) result.sfx = patch.sfx.map((s) => ({ at: Number(s.at), name: String(s.name), reason: s.reason || '수동' }));
     if (patch.bgm !== undefined) result.bgm = patch.bgm ? { ...(result.bgm || {}), ...patch.bgm } : null;
-    return this.store.update('remixJobs', id, { result });
+    const updated = this.store.update('remixJobs', id, { result });
+    if (this.library) this.library.addRemixJob(updated);
+    return updated;
   }
 
   async regenerate(userId, id) {
@@ -357,6 +362,7 @@ export class RemixEngine {
     if (j.status !== 'done' && j.status !== 'failed') throw new ApiError(409, '진행 중인 작업은 다시 만들 수 없습니다.');
     const half = Math.round((j.minutesCharged / 2) * 100) / 100;
     this.credits.charge(userId, half, `AI 재구성 다시 만들기(50%): ${j.source.title}`, { jobId: id });
+    this.library?.removeByRef('remix', id);
     this.store.update('remixJobs', id, { status: 'queued', step: 'queued', progress: 0, result: null, error: null, log: [{ at: new Date().toISOString(), step: 'queued', message: '다시 만들기 (이용권 50% 차감)' }] });
     const t = setTimeout(() => this._run(id).catch((err) => this._fail(id, err)), 10);
     if (t.unref) t.unref();

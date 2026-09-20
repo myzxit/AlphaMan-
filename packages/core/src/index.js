@@ -18,6 +18,7 @@ import { PixieService } from './pixie.js';
 import { AdminService } from './admin.js';
 import { VoiceService } from './voice.js';
 import { RemixEngine, REMIX_LIMITS, REMIX_DEFAULTS } from './remix.js';
+import { LibraryService, LIBRARY_KINDS } from './library.js';
 import { toolAvailability } from './media.js';
 import { LOCALES } from './i18n.js';
 import { CONTENT } from './content.js';
@@ -42,15 +43,16 @@ export class AlphaMan {
     this.translate = new TranslateService(this.ai);
     this.support = new SupportService({ store: this.store, notifications: this.notifications });
     this.voice = new VoiceService({ store: this.store, outputDir: this.outputDir });
-    this.shorts = new ShortsEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications, uploadsDir: this.uploadsDir, outputDir: this.outputDir, voice: this.voice });
-    this.longform = new LongformEngine({ store: this.store, credits: this.credits, ai: this.ai, notifications: this.notifications });
+    this.library = new LibraryService({ store: this.store, notifications: this.notifications });
+    this.shorts = new ShortsEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications, uploadsDir: this.uploadsDir, outputDir: this.outputDir, voice: this.voice, library: this.library });
+    this.longform = new LongformEngine({ store: this.store, credits: this.credits, ai: this.ai, notifications: this.notifications, library: this.library });
     this.publish = new PublishService({ store: this.store, notifications: this.notifications });
     this.topic = new TopicService({ store: this.store, ai: this.ai });
     this.tools = new ToolsService({ ai: this.ai });
     this.subtitles = new SubtitleProjects({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications });
     this.discovery = new DiscoveryService({ store: this.store });
     this.pixie = new PixieService({ store: this.store, ai: this.ai, support: this.support });
-    this.remix = new RemixEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, voice: this.voice, notifications: this.notifications, outputDir: this.outputDir });
+    this.remix = new RemixEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, voice: this.voice, notifications: this.notifications, outputDir: this.outputDir, library: this.library });
     this.admin = new AdminService({ store: this.store, credits: this.credits, auth: this.auth, support: this.support, notifications: this.notifications, publish: this.publish });
 
     this.auth.seedAdmin();
@@ -61,7 +63,9 @@ export class AlphaMan {
     return {
       name: 'AlphaMan', version: VERSION, platform: this.platform, locales: LOCALES,
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,
-      tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), remixLimits: REMIX_LIMITS,
+      tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), remixLimits: REMIX_LIMITS, libraryKinds: LIBRARY_KINDS,
+      // 대본 정확도: 브라우저 Whisper(파일) · 붙여넣은 대본 · 서버 whisper · yt-dlp 유튜브 자막만 사용하고, 추정 대본은 만들지 않는다
+      transcript: { simulatedAllowed: process.env.ALPHAMAN_ALLOW_SIMULATED_STT === '1', serverWhisper: Boolean(toolAvailability().whisper), youtubeCaptions: Boolean(toolAvailability().ytdlp) },
       adminEmail: ADMIN_ACCOUNT.email,
       uploadMaxBytes: process.env.ALPHAMAN_UPLOAD_MAX_BYTES ? Number(process.env.ALPHAMAN_UPLOAD_MAX_BYTES) : (process.env.VERCEL ? 4.5 * 1024 * 1024 : 2 * 1024 * 1024 * 1024),
       serverless: Boolean(process.env.VERCEL),
@@ -92,3 +96,5 @@ export { nextOccurrences } from './publish.js';
 export { TOOLS } from './tools.js';
 export { REMIX_LIMITS, REMIX_DEFAULTS } from './remix.js';
 export { VOICE_STYLES } from './voice.js';
+export { LIBRARY_KINDS } from './library.js';
+export { parseTranscriptText } from './subtitles/stt.js';

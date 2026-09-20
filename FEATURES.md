@@ -89,6 +89,9 @@
 | 참고 유튜브 영상처럼 재구성 | `remix.js analyzeReference` → 스타일 프로필(호흡·자막 스타일·구조·톤·효과음 밀도·전환·색감) 을 계획/재구성에 반영 | ✓ | ✓ |
 | 내 목소리 TTS (목소리 샘플 업로드 → 음성 프로필 → 합성) | `voice.js` (`#/voice`, `/api/voice/*`), ElevenLabs/XTTS/시뮬레이션 제공자, 본인 목소리 확인 | ✓ | ✓ |
 | 내 목소리로 AI 후킹 보이스 / 재구성 내레이션 | 쇼츠 스튜디오 음성 프로필 선택, 재구성 내레이션(오프닝·마무리/전체) | ✓ | ✓ |
+| 보관함: 내가 만든 영상(쇼츠·재구성·롱폼) 자동 저장, 즐겨찾기/검색/이름/제거, MP4 저장, SNS 업로드 | `library.js` (`#/library`, `/api/library*`), 완료 시 자동 저장 + 기존 작업 동기화, 대시보드 "최근 만든 영상" | ✓ | ✓ |
+| 완성 영상 미리보기 (클립 카드 · 재구성 결과 인라인 · 롱폼 · 보관함) | `player.js` — 렌더 MP4 재생(Range 스트리밍) 또는 원본(유튜브/파일)을 타임라인대로 이어 재생 + 자막·후킹·카드 오버레이, `/api/preview/:kind/:id`, `/api/uploads/:id/stream` | ✓ | ✓ (+ `/api/local/stream` 로컬 파일) |
+| 자막 = 원본 대본 그대로 | `stt.js transcribe` — 브라우저 Whisper(`transcript.js`, `stt-worker.js`) / 붙여넣은 대본(`parseTranscriptText`) / 서버 whisper / yt-dlp 유튜브 자막만 사용, 추정 대본 금지(422 안내), "원본 대본 그대로" 배지 | ✓ | ✓ (yt-dlp 자동 설치로 링크 대본 자동) |
 
 ## 5. 프로그램 버전에서만 추가되는 기능
 

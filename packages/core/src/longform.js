@@ -4,12 +4,14 @@ import { parseYoutubeUrl, fetchYoutubeMeta, probe } from './media.js';
 import { transcribe, semanticSplit } from './subtitles/stt.js';
 
 export class LongformEngine {
-  constructor({ store, credits, ai, notifications }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.notifications = notifications;
+  constructor({ store, credits, ai, notifications, library = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.notifications = notifications; this.library = library;
     this.speed = Number(process.env.ALPHAMAN_JOB_SPEED || 1);
   }
 
-  async create(userId, { url, uploadId, options = {} }) {
+  async create(userId, { url, uploadId, options = {}, transcript = null, transcriptText = '' }) {
+    if (Array.isArray(transcript) && transcript.length) options = { ...options, transcript };
+    if (transcriptText && String(transcriptText).trim()) options = { ...options, transcriptText: String(transcriptText) };
     let source;
     if (uploadId) {
       const up = this.store.get('uploads', uploadId);
@@ -32,7 +34,7 @@ export class LongformEngine {
 
   async _run(jobId) {
     const job = this.store.get('longformJobs', jobId);
-    const stt = await transcribe({ filePath: job.source.path, durationSec: job.source.durationSec, language: job.options.language, title: job.source.title });
+    const stt = await transcribe({ filePath: job.source.path, durationSec: job.source.durationSec, language: job.options.language, title: job.source.title, source: job.source, transcript: job.options.transcript || null, transcriptText: job.options.transcriptText || '' });
     this.store.update('longformJobs', jobId, { progress: 50 });
     const segs = stt.segments;
     const cuts = [];
@@ -49,11 +51,12 @@ export class LongformEngine {
       originalDurationSec: job.source.durationSec,
       editedDurationSec: Math.round((job.source.durationSec - removed) * 100) / 100,
       removedSec: Math.round(removed * 100) / 100,
-      cuts, chapters, subtitles, transcriptEngine: stt.engine,
+      cuts, chapters, subtitles, transcriptEngine: stt.engine, transcriptExact: stt.exact !== false,
       timeline: buildTimeline(job.source.durationSec, cuts),
     };
-    this.store.update('longformJobs', jobId, { status: 'done', progress: 100, result });
-    this.notifications?.push(job.userId, { type: 'longform.done', title: '롱폼 컷편집 완료', body: `${result.removedSec}초의 공백을 제거했어요.`, link: `#/longform/${jobId}` });
+    const done = this.store.update('longformJobs', jobId, { status: 'done', progress: 100, result });
+    if (this.library) this.library.addLongformJob(done); // 보관함 자동 저장
+    this.notifications?.push(job.userId, { type: 'longform.done', title: '롱폼 컷편집 완료', body: `${result.removedSec}초의 공백을 제거했어요. 보관함에서 미리 볼 수 있어요.`, link: `#/longform/${jobId}` });
   }
 
   async _chapters(segments, title) {
@@ -69,6 +72,7 @@ export class LongformEngine {
 
   list(userId) { return this.store.find('longformJobs', (j) => j.userId === userId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
   get(userId, id) { const j = this.store.get('longformJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.'); return j; }
+  remove(userId, id) { this.get(userId, id); this.library?.removeByRef('longform', id); return this.store.remove('longformJobs', id); }
 }
 
 function buildTimeline(duration, cuts) {
