@@ -11,29 +11,113 @@
     "build:mac": "electron-builder --mac --publish never",
     "build:linux": "electron-builder --linux --publish never"
   },
-  "dependencies": {
-    "@alphaman/core": "1.0.0",
-    "@alphaman/server": "1.0.0"
-  },
   "devDependencies": {
-    "electron": "^33.2.0",
+    "electron": "33.4.11",
     "electron-builder": "^25.1.8"
   },
   "build": {
     "appId": "app.alphaman.desktop",
     "productName": "AlphaMan",
     "artifactName": "AlphaMan-${version}-${os}-${arch}.${ext}",
-    "directories": { "output": "../../release" },
-    "files": ["main.cjs", "preload.cjs", "icon.png", "assets/**"],
-    "extraResources": [
-      { "from": "../../packages/core", "to": "app/packages/core", "filter": ["src/**", "package.json"] },
-      { "from": "../../apps/server", "to": "app/apps/server", "filter": ["src/**", "bin/**", "package.json"] },
-      { "from": "../../apps/web/public", "to": "app/apps/web/public" },
-      { "from": "../../node_modules/@anthropic-ai", "to": "app/node_modules/@anthropic-ai" }
+    "directories": {
+      "output": "../../release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "icon.png",
+      "package.json"
     ],
-    "win": { "target": ["nsis", "portable"] },
-    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.video" },
-    "linux": { "target": ["AppImage", "deb"], "category": "AudioVideo" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+    "extraResources": [
+      {
+        "from": "../../packages/core",
+        "to": "app/packages/core",
+        "filter": [
+          "src/**",
+          "package.json"
+        ]
+      },
+      {
+        "from": "../../apps/server",
+        "to": "app/apps/server",
+        "filter": [
+          "src/**",
+          "bin/**",
+          "package.json"
+        ]
+      },
+      {
+        "from": "../../apps/web/public",
+        "to": "app/apps/web/public"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "AlphaMan-${version}-win-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.video",
+      "identity": null,
+      "artifactName": "AlphaMan-${version}-mac-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo",
+      "maintainer": "hhudeu66@gmail.com",
+      "artifactName": "AlphaMan-${version}-linux-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "icon": "icon.png",
+    "npmRebuild": false,
+    "portable": {
+      "artifactName": "AlphaMan-${version}-win-${arch}-portable.${ext}"
+    },
+    "publish": null,
+    "executableName": "alphaman"
+  },
+  "author": {
+    "name": "AlphaMan",
+    "email": "hhudeu66@gmail.com"
+  },
+  "homepage": "https://github.com/myzxit/AlphaMan-",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/myzxit/AlphaMan-.git"
   }
 }

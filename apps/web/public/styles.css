@@ -158,3 +158,50 @@ label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 4px;
   .sidebar { position: fixed; left: 0; top: 0; z-index: 55; transform: translateX(-100%); width: var(--sidebar-w) !important; } .app-shell.sidebar-mobile-open .sidebar { transform: none; }
   .only-mobile { display: inline-grid; } .grid-2, .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr; } .hero h1 { font-size: 1.9rem; } .stats { grid-template-columns: 1fr; } .footer-grid { grid-template-columns: 1fr; } .view { padding: 16px; } .admin-grid { grid-template-columns: 1fr; } .seg-row { grid-template-columns: 70px 70px 1fr; }
 }
+
+/* ---- 미리보기 플레이어 (보관함 · 스튜디오 · 재구성 공용) ---- */
+.player { display: flex; flex-direction: column; gap: 8px; }
+.player-stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 9; width: 100%; max-height: 70vh; margin: 0 auto; }
+.player.r-9-16 .player-stage { aspect-ratio: 9 / 16; max-height: 70vh; width: auto; min-width: 240px; }
+.player.r-1-1 .player-stage { aspect-ratio: 1; max-height: 70vh; width: auto; min-width: 240px; }
+.player.r-4-5 .player-stage { aspect-ratio: 4 / 5; max-height: 70vh; width: auto; min-width: 240px; }
+.player-media, .player-media video, .player-media iframe { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border: 0; }
+.player-sub { position: absolute; left: 6%; right: 6%; bottom: 12%; text-align: center; color: #fff; font-weight: 900; font-size: clamp(14px, 2.2vw, 26px); text-shadow: 0 2px 6px #000, 0 0 2px #000; pointer-events: none; }
+.player-hook { position: absolute; top: 12px; left: 12px; right: 12px; background: rgba(0,0,0,.6); color: #ffd400; border-radius: 10px; padding: 8px 10px; font-weight: 800; pointer-events: none; }
+.player-card { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; background: #14161c; color: #fff; font-size: clamp(18px, 3vw, 36px); font-weight: 900; }
+.player-kind { position: absolute; top: 12px; right: 12px; background: rgba(0,0,0,.6); color: #fff; font-size: .75rem; padding: 4px 8px; border-radius: 8px; pointer-events: none; }
+.player-loading { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(0,0,0,.6); padding: 20px; text-align: center; }
+.player-loading.error { color: #ffb4b4; }
+.player-bar { display: flex; align-items: center; gap: 10px; }
+.player-progress { position: relative; flex: 1; height: 14px; border-radius: 7px; background: var(--surface-2); cursor: pointer; overflow: hidden; }
+.player-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--primary); opacity: .85; width: 0; pointer-events: none; }
+.player-mark { position: absolute; top: 10px; bottom: 0; opacity: .8; }
+.player-mark.k-source { background: transparent; } .player-mark.k-replay { background: var(--accent); } .player-mark.k-slowmo { background: #16a34a; } .player-mark.k-card { background: #6b7280; }
+.player-chapter { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); }
+.player-time { font-variant-numeric: tabular-nums; font-size: .85rem; min-width: 100px; text-align: right; }
+.player-host { min-height: 200px; }
+.library-grid .clip-preview { display: grid; place-items: center; }
+.library-play { font-size: 2.4rem; color: #fff; text-shadow: 0 2px 10px #000; opacity: .85; }
+.library-card .btn-ghost.active { color: var(--warn); }
+.transcript-panel textarea { width: 100%; font-family: inherit; }
+.preview-inline { margin: 12px 0; }
+
+/* ---- 유튜브 최적화 · 썸네일 편집기 ---- */
+.seo-best { font-size: 1.2rem; font-weight: 900; margin-top: 6px; }
+.seo-title { padding: 8px 6px; border-bottom: 1px dashed var(--border); cursor: pointer; } .seo-title:hover { background: var(--primary-soft); border-radius: 8px; }
+.thumb-editor { display: grid; grid-template-columns: 1.1fr .9fr; gap: 16px; }
+.thumb-preview { background: #000; border-radius: 12px; overflow: hidden; display: grid; place-items: center; } .thumb-preview img { width: 100%; max-height: 60vh; object-fit: contain; }
+.thumb-cands { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.thumb-cand { border: 2px solid var(--border); border-radius: 10px; padding: 4px; cursor: pointer; text-align: center; } .thumb-cand.active { border-color: var(--primary); background: var(--primary-soft); }
+.thumb-cand img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #000; }
+.thumb-cand-empty { aspect-ratio: 16 / 9; display: grid; place-items: center; background: var(--surface-2); border-radius: 6px; color: var(--muted); }
+.thumb-capture-box video { border-radius: 10px; background: #000; max-height: 60vh; }
+.player-cta { display: grid; place-items: center; gap: 14px; }
+.player-cta .cta-btn { background: #ff0033; color: #fff; padding: 10px 26px; border-radius: 999px; font-size: .55em; font-weight: 900; box-shadow: 0 6px 20px rgba(255,0,51,.35); }
+.player-cta .cta-icons { font-size: .5em; opacity: .9; }
+.voice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.voice-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; } .voice-card.active { border-color: var(--primary); background: var(--primary-soft); }
+@media (max-width: 1000px) { .thumb-editor { grid-template-columns: 1fr; } }
+
+/* 미리보기: 원본 박힌 자막 영역(하단) 잘라내기 */
+.player-media.cropped video, .player-media.cropped iframe { height: calc(100% / (1 - var(--crop, 0))); top: 0; object-fit: cover; }

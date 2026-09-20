@@ -1,0 +1,11 @@
+services:
+  alphaman:
+    build: .
+    ports: ["4100:4100"]
+    volumes: ["alphaman-data:/data"]
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+    restart: unless-stopped
+volumes:
+  alphaman-data:

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm install --omit=optional --no-audit --no-fund",
+  "buildCommand": "",
+  "framework": null,
+  "functions": {
+    "api/index.js": { "includeFiles": "apps/web/public/**", "maxDuration": 60, "memory": 1024 }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}

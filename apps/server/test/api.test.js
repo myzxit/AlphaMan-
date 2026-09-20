@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { createApp, createHttpServer } from '../src/server.js';
 
 process.env.ALPHAMAN_AI = 'off';
+process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
+process.env.ALPHAMAN_TTS_DETECT = 'off'; // 테스트에서는 네트워크 TTS 탐색 생략
 
 async function boot() {
   const app = createApp({ memory: true, platform: 'test' });
@@ -61,6 +63,49 @@ test('API: info, admin login, admin-only routes, user flow', async () => {
     assert.ok(proj.data.segments.length);
     const exp = await t.call('GET', `/api/subtitles/projects/${proj.data.id}/export?format=vtt`, undefined, userToken);
     assert.match(String(exp.data), /^WEBVTT/);
+
+    // 보관함 + 미리보기 + 원본 스트리밍(Range)
+    const lib = await t.call('GET', '/api/library', undefined, userToken);
+    assert.equal(lib.status, 200); assert.equal(lib.data.items.length, 2); assert.equal(lib.data.stats.byKind.shorts, 2);
+    const item = await t.call('GET', `/api/library/${lib.data.items[0].id}`, undefined, userToken);
+    assert.equal(item.data.preview.kind, 'shorts'); assert.ok(item.data.preview.items.length >= 1);
+    const fav = await t.call('PATCH', `/api/library/${lib.data.items[0].id}`, { favorite: true }, userToken);
+    assert.equal(fav.data.favorite, true);
+    const noVideo = await t.call('GET', `/api/library/${lib.data.items[0].id}/video`, undefined, userToken);
+    assert.equal(noVideo.status, 404);
+    const prev = await t.call('GET', `/api/preview/shorts/${full.data.clips[1].id}`, undefined, userToken);
+    assert.equal(prev.status, 200); assert.equal(prev.data.source.videoId, 'abcdefghijk');
+    const forbidden = await t.call('GET', `/api/preview/shorts/${full.data.clips[1].id}`, undefined, adminToken);
+    assert.equal(forbidden.status, 404);
+    const range = await fetch(`${t.base}/api/uploads/${up.data.id}/stream`, { headers: { authorization: `Bearer ${userToken}`, range: 'bytes=0-99' } });
+    assert.equal(range.status, 206); assert.equal(range.headers.get('content-length'), '100'); assert.match(range.headers.get('content-range'), /^bytes 0-99\//);
+    assert.match(range.headers.get('content-disposition'), /^inline/);
+    const local = await t.call('GET', '/api/local/stream?path=/etc/hosts', undefined, userToken);
+    assert.equal(local.status, 403);
+    // 무료 목소리 · SEO · 썸네일
+    const free = await t.call('GET', '/api/voice/free');
+    assert.ok(free.data.voices.length >= 9 && free.data.styles.length >= 4);
+    const tts = await t.call('POST', '/api/voice/synthesize', { voiceId: 'ko-jimin', text: '테스트 문장입니다', style: 'calm' }, userToken);
+    assert.equal(tts.status, 200); assert.equal(tts.data.voiceId, 'ko-jimin');
+    const clipId = full.data.clips[0].id;
+    const seo = await t.call('GET', `/api/seo/shorts/${clipId}`, undefined, userToken);
+    assert.ok(seo.data.bestTitle && seo.data.tags.length);
+    const regen = await t.call('POST', `/api/seo/shorts/${clipId}`, { hook: '이거 모르면 손해' }, userToken);
+    assert.equal(regen.status, 200); assert.ok(regen.data.titles.some((x) => x.text.includes('이거 모르면 손해')));
+    const th = await t.call('GET', `/api/thumbnail/shorts/${clipId}`, undefined, userToken);
+    assert.ok(th.data.set && th.data.candidates.length >= 4 && th.data.styles.length === 5);
+    const svg = await fetch(`${t.base}/api/thumbnail/shorts/${clipId}/image.svg`, { headers: { authorization: `Bearer ${userToken}` } });
+    assert.equal(svg.status, 200); assert.match(svg.headers.get('content-type'), /image\/svg\+xml/); assert.match(await svg.text(), /^<svg/);
+    const put = await t.call('PUT', `/api/thumbnail/shorts/${clipId}`, { candidateId: 'yt-1', headline: '편집 제목', style: 'split', palette: 'blue' }, userToken);
+    assert.equal(put.data.style, 'split');
+    const fr = await t.call('POST', `/api/thumbnail/shorts/${clipId}/frame`, Buffer.from('jpeg'), userToken, { 'content-type': 'image/jpeg', 'x-at': '2.5' });
+    assert.equal(fr.status, 200); assert.equal(fr.data.at, 2.5);
+    const frameRes = await fetch(`${t.base}${fr.data.url}`, { headers: { authorization: `Bearer ${userToken}` } });
+    assert.equal(frameRes.status, 200);
+    const badProxy = await t.call('GET', '/api/thumbnail/proxy?url=https://example.com/x.jpg', undefined, userToken);
+    assert.equal(badProxy.status, 400);
+    const otherSeo = await t.call('GET', `/api/seo/shorts/${clipId}`, undefined, adminToken);
+    assert.equal(otherSeo.status, 404);
 
     const disc = await t.call('GET', '/api/discovery/videos?type=shorts&regions=KR&sort_by=trend');
     assert.equal(disc.data.items.length, 10);

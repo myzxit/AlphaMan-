@@ -13,4 +13,5 @@ contextBridge.exposeInMainWorld('alphaman', {
   showInFolder: (p) => ipcRenderer.invoke('show-in-folder', p),
   notify: (title, body) => ipcRenderer.invoke('notify', { title, body }),
   appInfo: () => ipcRenderer.invoke('app-info'),
+  toolsState: () => ipcRenderer.invoke('tools-state'),
 });

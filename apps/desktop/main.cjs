@@ -10,6 +10,26 @@ let server = null; let win = null; let tray = null;
 const isPackaged = app.isPackaged;
 const appRoot = isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '../..');
 
+// 프로그램 버전은 유튜브 링크의 원본 자막(대본)을 자동으로 가져오기 위해 yt-dlp 를 사용자 데이터 폴더에 자동 설치한다 (없을 때만).
+const toolsState = { ytdlp: 'checking', ytdlpPath: null, error: null };
+function hasOnPath(bin) { try { execSync(`${process.platform === 'win32' ? 'where' : 'which'} ${bin}`, { stdio: 'ignore', timeout: 5000 }); return true; } catch { return false; } }
+async function ensureYtDlp() {
+  const binDir = path.join(app.getPath('userData'), 'bin');
+  const file = path.join(binDir, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+  if (!process.env.PATH.split(path.delimiter).includes(binDir)) process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
+  if (hasOnPath('yt-dlp')) { toolsState.ytdlp = 'ready'; toolsState.ytdlpPath = fs.existsSync(file) ? file : 'PATH'; return; }
+  try {
+    fs.mkdirSync(binDir, { recursive: true });
+    const asset = process.platform === 'win32' ? 'yt-dlp.exe' : process.platform === 'darwin' ? 'yt-dlp_macos' : 'yt-dlp';
+    toolsState.ytdlp = 'downloading';
+    const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+    if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
+    toolsState.ytdlp = 'ready'; toolsState.ytdlpPath = file;
+  } catch (err) { toolsState.ytdlp = 'missing'; toolsState.error = err.message; console.warn('yt-dlp 자동 설치 실패 (링크 대본은 붙여넣기로 대체):', err.message); }
+}
+
 async function startEmbeddedServer() {
   // 패키징된 앱에서는 extraResources 로 복사된 코어/서버를, 개발 중에는 워크스페이스를 사용
   const serverEntry = isPackaged ? path.join(appRoot, 'apps/server/src/server.js') : path.resolve(__dirname, '../server/src/server.js');
@@ -92,7 +112,8 @@ ipcMain.handle('list-removable-drives', async () => listRemovableDrives());
 ipcMain.handle('open-path', async (_e, p) => shell.openPath(p));
 ipcMain.handle('show-in-folder', async (_e, p) => shell.showItemInFolder(p));
 ipcMain.handle('notify', async (_e, { title, body }) => { if (Notification.isSupported()) new Notification({ title, body }).show(); return true; });
-ipcMain.handle('app-info', async () => ({ version: app.getVersion(), platform: process.platform, dataDir: server?.app.dataDir, outputDir: server?.app.outputDir, apiBase: server?.url, tools: server ? (await server.app.info()).tools : null }));
+ipcMain.handle('app-info', async () => ({ version: app.getVersion(), platform: process.platform, dataDir: server?.app.dataDir, outputDir: server?.app.outputDir, apiBase: server?.url, tools: server ? (await server.app.info()).tools : null, toolsState }));
+ipcMain.handle('tools-state', async () => toolsState);
 
 function listRemovableDrives() {
   const drives = [];
@@ -115,6 +136,7 @@ function listRemovableDrives() {
 app.whenReady().then(async () => {
   try { await startEmbeddedServer(); } catch (err) { dialog.showErrorBox('AlphaMan 시작 실패', String(err.stack || err)); app.quit(); return; }
   createWindow(); createTray();
+  if (!process.env.ALPHAMAN_SCREENSHOT) ensureYtDlp().catch(() => {}); // 백그라운드 설치 (시작을 막지 않음)
   // 알림 브리지: 새 알림이 오면 OS 알림으로 표시
   setInterval(async () => {
     try {

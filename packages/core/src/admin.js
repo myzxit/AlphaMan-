@@ -78,7 +78,7 @@ export class AdminService {
     const u = this.store.get('users', id);
     if (!u) throw new ApiError(404, '사용자를 찾을 수 없습니다.');
     if (u.isSeededAdmin) throw new ApiError(400, '기본 관리자 계정은 삭제할 수 없습니다.');
-    for (const c of ['sessions', 'jobs', 'clips', 'subtitleProjects', 'longformJobs', 'remixJobs', 'voiceProfiles', 'voiceRenders', 'publishAccounts', 'publishQueue', 'topicReports', 'notifications', 'pixieThreads', 'credits']) {
+    for (const c of ['sessions', 'jobs', 'clips', 'subtitleProjects', 'longformJobs', 'remixJobs', 'voiceProfiles', 'voiceRenders', 'library', 'publishAccounts', 'publishQueue', 'topicReports', 'notifications', 'pixieThreads', 'credits']) {
       for (const rec of this.store.find(c, (r) => r.userId === id)) this.store.remove(c, rec.id);
     }
     this.store.remove('users', id);

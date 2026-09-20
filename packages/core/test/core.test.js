@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { AlphaMan, ADMIN_ACCOUNT, validateVideoMeta, parseYoutubeUrl, toSRT, toVTT, toASS, semanticSplit, nextOccurrences, ApiError } from '../src/index.js';
 
 process.env.ALPHAMAN_AI = 'off';
+process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
+process.env.ALPHAMAN_TTS_DETECT = 'off'; // 테스트에서는 네트워크 TTS 탐색 생략
 
 function app() { return new AlphaMan({ memory: true, platform: 'test' }); }
 function waitFor(fn, ms = 4000) {
@@ -220,7 +222,7 @@ test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타�
   a.credits.grant(user.id, 200, 'test');
   await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: false }), /권리/);
   await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 40 } }), /1~28분/);
-  await assert.rejects(() => a.remix.create(user.id, { rightsConfirmed: true }), /링크 또는 파일/);
+  await assert.rejects(() => a.remix.create(user.id, { rightsConfirmed: true }), /또는 파일 중 하나/);
   const job = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', referenceUrl: 'https://www.youtube.com/watch?v=zyxwvutsrqp', rightsConfirmed: true, options: { targetMinutes: 3, estimatedDurationSec: 20 * 60 } });
   assert.equal(job.minutesCharged, 20);
   assert.equal(a.credits.balance(user.id), 210);
@@ -228,6 +230,16 @@ test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타�
   const done = await waitFor(() => { const j = a.store.get('remixJobs', job.id); return j.status === 'done' ? j : null; }, 8000);
   const r = done.result;
   assert.ok(r.styleProfile && r.styleProfile.pacing);
+  // 참고 영상 구조를 따라 섹션 카드와 구간 길이 비율이 반영된다
+  assert.ok(Array.isArray(r.styleProfile.segmentPattern) && Math.abs(r.styleProfile.segmentPattern.reduce((a, b) => a + b, 0) - 1) < 0.02);
+  assert.ok(r.timeline.some((t) => t.kind === 'card' && r.styleProfile.structure.includes(t.title)));
+  assert.ok(r.timeline.some((t) => t.section));
+  assert.ok(r.mirroredFromReference.includes('segmentPattern'));
+  // 쇼츠를 참고 영상으로 주면 비율이 자동으로 9:16
+  const refShort = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', referenceUrl: 'https://www.youtube.com/shorts/qqqqqqqqqqq', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 300 } });
+  const rsDone = await waitFor(() => { const j = a.store.get('remixJobs', refShort.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.equal(rsDone.result.ratio, '9:16');
+  assert.equal(rsDone.result.styleProfile.reference.isShorts, true);
   assert.ok(r.finalDurationSec >= 60 && r.finalDurationSec <= 28 * 60);
   assert.ok(Math.abs(r.finalDurationSec - 180) <= 30, `목표 3분 근처여야 함: ${r.finalDurationSec}`);
   assert.ok(r.plan.keep.length > 0);
@@ -242,12 +254,23 @@ test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타�
   assert.equal(edited.result.plan.title, '새 제목');
   assert.equal(edited.result.sfx.length, 1);
   await a.remix.regenerate(user.id, job.id);
-  assert.equal(a.credits.balance(user.id), 200);
+  // 230(가입+지급) - 20(첫 작업) - 5(참고 쇼츠 작업) - 10(다시 만들기 50%)
+  assert.equal(a.credits.balance(user.id), 195);
   await waitFor(() => a.store.get('remixJobs', job.id).status === 'done', 8000);
-  // 원본이 목표보다 짧으면 전체 유지
-  const short = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 10, estimatedDurationSec: 90 } });
+  // 쇼츠 링크(짧은 원본)는 카드·리플레이·슬로모션으로 목표 길이까지 확장된다
+  const short = await a.remix.create(user.id, { url: 'https://www.youtube.com/shorts/zyxwvutsrqp', rightsConfirmed: true, options: { targetMinutes: 10, estimatedDurationSec: 45 } });
+  assert.equal(short.source.isShorts, true);
   const sdone = await waitFor(() => { const j = a.store.get('remixJobs', short.id); return j.status === 'done' ? j : null; }, 8000);
-  assert.ok(sdone.result.finalDurationSec <= 90);
+  assert.ok(Math.abs(sdone.result.finalDurationSec - 600) <= 30, `목표 10분 근처여야 함: ${sdone.result.finalDurationSec}`);
+  assert.equal(sdone.result.extended, true);
+  const kinds = new Set(sdone.result.timeline.map((t) => t.kind));
+  assert.ok(kinds.has('source') && kinds.has('replay') && kinds.has('card'));
+  assert.ok(sdone.result.subtitles.length > 10);
+  assert.match(sdone.result.render.plan.args.join(' '), /concat=n=/);
+  // TikTok / Reels 링크도 허용
+  const tk = await a.remix.create(user.id, { url: 'https://www.tiktok.com/@user/video/7300000000000000000', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 30 } });
+  assert.equal(tk.source.type, 'tiktok');
+  await waitFor(() => a.store.get('remixJobs', tk.id).status === 'done', 8000);
   a.close();
 });
 
@@ -277,7 +300,8 @@ test('내 목소리 TTS: 샘플 업로드 → 프로필 → 합성, 쇼츠 후�
   assert.equal(clip.audio.aiHookVoice.voice, 'my-voice');
   assert.equal(clip.audio.aiHookVoice.voiceProfileId, profile.id);
   // 재구성 내레이션
-  await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'intro', estimatedDurationSec: 300 } }), /음성 프로필/);
+  // 프로필이 없어도 무료 한국어 목소리로 내레이션 (존재하지 않는 프로필 id 는 404)
+  await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'intro', voiceProfileId: 'nope', estimatedDurationSec: 300 } }), /음성 프로필/);
   const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'full', voiceProfileId: profile.id, estimatedDurationSec: 300 } });
   const done = await waitFor(() => { const j = a.store.get('remixJobs', remix.id); return j.status === 'done' ? j : null; }, 8000);
   assert.ok(done.result.narration.lines.length >= 2);
@@ -285,4 +309,206 @@ test('내 목소리 TTS: 샘플 업로드 → 프로필 → 합성, 쇼츠 후�
   a.voice.remove(user.id, profile.id);
   assert.equal(a.voice.list(user.id).length, 0);
   a.close();
+});
+
+test('원본 대본 그대로: 붙여넣은 대본 형식 해석(SRT · 유튜브 스크립트 · [mm:ss.s] · 문장), 제공된 대본이 자막에 그대로 쓰이고, 추정 대본 금지 시 422', async () => {
+  const { parseTranscriptText } = await import('../src/index.js');
+  const srt = parseTranscriptText('1\n00:00:01,000 --> 00:00:03,500\n안녕하세요 오늘은\n\n2\n00:00:03,500 --> 00:00:06,000\n이 영상에서는 세 가지를 다룹니다\n');
+  assert.equal(srt.length, 2); assert.equal(srt[0].text, '안녕하세요 오늘은'); assert.equal(srt[1].start, 3.5);
+  const yt = parseTranscriptText('0:00\n안녕하세요 오늘은\n0:04\n이 영상에서는 세 가지를 다룹니다\n1:02\n마지막 정리입니다', 70);
+  assert.deepEqual(yt.map((s) => [s.start, s.end, s.text]), [[0, 4, '안녕하세요 오늘은'], [4, 62, '이 영상에서는 세 가지를 다룹니다'], [62, 68, '마지막 정리입니다']]);
+  const browser = parseTranscriptText('[00:00.0] 안녕하세요 오늘은\n[00:04.5] 이 영상에서는', 30);
+  assert.equal(browser[1].start, 4.5);
+  const plain = parseTranscriptText('첫 문장입니다. 두 번째 문장입니다! 세 번째?', 30);
+  assert.equal(plain.length, 3); assert.equal(plain[2].end, 30);
+
+  const a = app();
+  const { user } = a.auth.signup({ email: 'exact@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 100, 'test');
+  // 브라우저 Whisper 세그먼트를 제공하면 자막 텍스트가 원본 대본과 완전히 같다
+  const transcript = [{ start: 0, end: 4, text: '안녕하세요 오늘은 알파맨을 소개합니다' }, { start: 4, end: 9, text: '핵심은 세 가지입니다' }, { start: 9, end: 15, text: '첫째 링크만 넣으면 됩니다' }, { start: 15, end: 22, text: '둘째 자막이 원본과 똑같습니다' }, { start: 22, end: 30, text: '셋째 보관함에 저장됩니다' }];
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 60, clipCount: 1 }, transcript });
+  const done = await waitFor(() => { const j = a.store.get('jobs', job.id); return j.status === 'done' ? j : null; });
+  assert.equal(done.transcriptExact, true); assert.equal(done.transcriptEngine, 'client');
+  const clip = a.shorts.getJob(user.id, job.id).clips[0];
+  const original = transcript.map((s) => s.text).join(' ').replace(/\s+/g, '');
+  const subtitleText = clip.subtitles.map((s) => s.text).join(' ').replace(/\s+/g, '');
+  assert.ok(original.includes(subtitleText) && subtitleText.length > 0, '자막은 원본 대본의 일부를 그대로 담아야 한다');
+  // 붙여넣은 대본(transcriptText)도 그대로
+  const proj = await a.subtitles.createFromUrl(user.id, { url: 'https://youtu.be/abcdefghijk', transcriptText: '0:00\n첫 번째 줄 그대로\n0:03\n두 번째 줄 그대로' });
+  assert.equal(proj.transcriptExact, true); assert.equal(proj.engine, 'pasted-transcript');
+  assert.deepEqual(proj.segments.map((s) => s.text), ['첫 번째 줄 그대로', '두 번째 줄 그대로']);
+  // 추정 대본을 금지하면(기본값) 대본 없이 링크만으로는 422 안내
+  process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '0';
+  try {
+    await assert.rejects(() => a.subtitles.createFromUrl(user.id, { url: 'https://youtu.be/abcdefghijk' }), (err) => err.status === 422 && /스크립트 표시/.test(err.message));
+    assert.equal(a.subtitles.list(user.id).length, 1, '실패한 프로젝트는 남지 않는다');
+  } finally { process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1'; }
+  a.close();
+});
+
+test('보관함: 쇼츠·재구성·롱폼 완료 시 자동 저장, 미리보기 스펙, 즐겨찾기/이름 수정, 제거, 작업 삭제 시 함께 삭제', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'lib@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 200, 'test');
+  assert.equal(a.library.list(user.id).items.length, 0);
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 240 } });
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  let { items, stats } = a.library.list(user.id);
+  assert.equal(items.length, 2); assert.equal(stats.byKind.shorts, 2);
+  assert.ok(items.every((i) => i.kind === 'shorts' && i.jobId === job.id && i.durationSec > 0 && i.ratio === '9:16'));
+  const detail = a.library.detail(user.id, items[0].id);
+  assert.equal(detail.preview.kind, 'shorts'); assert.equal(detail.preview.source.type, 'youtube'); assert.equal(detail.preview.source.videoId, 'abcdefghijk');
+  assert.ok(detail.preview.items.length >= 1 && detail.preview.items[0].newStart === 0);
+  assert.ok(detail.preview.subtitles.length > 0); assert.equal(detail.link, `#/studio/${job.id}`);
+  // 재구성
+  const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 120 } });
+  await waitFor(() => a.store.get('remixJobs', remix.id).status === 'done', 8000);
+  ({ items, stats } = a.library.list(user.id));
+  assert.equal(stats.byKind.remix, 1);
+  const rItem = items.find((i) => i.kind === 'remix');
+  const rSpec = a.library.previewSpec(user.id, 'remix', remix.id);
+  assert.ok(rSpec.items.some((t) => t.kind === 'card') && rSpec.durationSec >= 57);
+  // 롱폼
+  const lf = await a.longform.create(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 300 } });
+  await waitFor(() => a.store.get('longformJobs', lf.id).status === 'done');
+  ({ items, stats } = a.library.list(user.id));
+  assert.equal(stats.byKind.longform, 1); assert.equal(stats.total, 4);
+  const lSpec = a.library.previewSpec(user.id, 'longform', lf.id);
+  assert.ok(lSpec.items.length >= 1 && lSpec.chapters.length >= 1);
+  // 편집
+  const fav = a.library.update(user.id, rItem.id, { favorite: true, title: '내 첫 재구성', tags: ['테스트'] });
+  assert.equal(fav.favorite, true); assert.equal(fav.title, '내 첫 재구성');
+  assert.equal(a.library.list(user.id, { favorite: '1' }).items.length, 1);
+  assert.equal(a.library.list(user.id, { q: '첫 재구성' }).items.length, 1);
+  // 재구성 결과 수정(제목)도 보관함에 반영되고 즐겨찾기는 유지
+  a.remix.updateResult(user.id, remix.id, { title: '수정된 제목' });
+  const after = a.library.list(user.id).items.find((i) => i.kind === 'remix');
+  assert.equal(after.title, '수정된 제목'); assert.equal(after.favorite, true);
+  // 다른 사용자는 볼 수 없다
+  const other = a.auth.signup({ email: 'other@test.com', password: 'secret1' }).user;
+  assert.throws(() => a.library.get(other.id, rItem.id), /찾을 수 없습니다/);
+  // 제거 · 작업 삭제 시 연동
+  a.library.remove(user.id, rItem.id);
+  assert.equal(a.library.list(user.id).stats.byKind.remix, 1, '원본 작업이 남아 있으면 다시 동기화된다');
+  a.remix.remove(user.id, remix.id);
+  assert.equal(a.library.list(user.id).stats.byKind.remix, 0);
+  a.shorts.deleteJob(user.id, job.id);
+  assert.equal(a.library.list(user.id).stats.byKind.shorts, 0);
+  a.close();
+});
+
+
+test('무료 한국어 TTS 목소리: 목록·합성(브라우저/edge)·샘플 듣기, 기본 후킹 보이스와 내레이션에 사용', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'free@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 100, 'test');
+  const voices = a.voice.freeVoices();
+  assert.ok(voices.length >= 25 && voices.every((v) => v.id && v.name && v.sampleText && v.lang));
+  assert.ok(voices.filter((v) => v.lang === 'ko-KR').length >= 18, '한국어 목소리(기본 + 스타일 변형)가 충분히 많아야 한다');
+  assert.ok(voices.some((v) => v.gender === 'male') && voices.some((v) => v.gender === 'female'));
+  const r = await a.voice.synthesize(user.id, { voiceId: 'ko-hyunsu', text: '아직도 이거 모르셨어요?', style: 'hook' });
+  assert.equal(r.voiceId, 'ko-hyunsu'); assert.ok(['browser', 'edge-tts', 'edge', 'google'].includes(r.engine));
+  if (r.engine === 'browser') assert.equal(r.browser.lang, 'ko-KR');
+  assert.throws(() => a.voice.sampleFile(user.id, 'nope'), /찾을 수 없습니다/);
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-voice2-')); const sample = path.join(dir, 'me.wav'); fs.writeFileSync(sample, Buffer.alloc(16 * 1024 * 20));
+  const up = a.registerUpload(user.id, { filename: 'me.wav', mimeType: 'audio/wav', size: 1, path: sample });
+  const profile = await a.voice.createProfile(user.id, { uploadId: up.id, name: '내 목소리', consent: true });
+  assert.equal(a.voice.sampleFile(user.id, profile.id).path, sample);
+  assert.equal(a.voice.resolve(user.id, { voiceProfileId: profile.id }).kind, 'profile');
+  assert.equal(a.voice.resolve(user.id, {}).id, 'ko-sunhi');
+  // 후킹 보이스: 프로필 없이 무료 목소리 선택
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, aiHookVoice: true, voiceId: 'ko-yujin' } });
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  const clip = a.shorts.getJob(user.id, job.id).clips[0];
+  assert.equal(clip.audio.aiHookVoice.voice, 'ko-yujin');
+  // 내레이션도 무료 목소리로
+  const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, narration: 'intro', voiceId: 'ko-injoon', estimatedDurationSec: 120 } });
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', remix.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.equal(done.result.narration.voice.id, 'ko-injoon');
+  a.close();
+});
+
+test('영상 마무리 구독 CTA · 유튜브 최적화(원본 비슷한 제목/추천 제목/태그/해시태그) · 썸네일 자동 제작(원본 비슷하게 + 장면 선택 + 편집)', async () => {
+  const { composeSvg, extractKeywords } = await import('../src/index.js');
+  const a = app();
+  const { user } = a.auth.signup({ email: 'seo@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 200, 'test');
+  const transcript = [{ start: 0, end: 5, text: '오늘은 유튜브 알고리즘의 비밀 3가지를 알려드립니다' }, { start: 5, end: 12, text: '첫째 썸네일이 클릭률을 결정합니다' }, { start: 12, end: 20, text: '둘째 첫 3초 후킹이 시청 지속시간을 만듭니다' }, { start: 20, end: 30, text: '셋째 제목과 태그가 검색 노출을 만듭니다' }, { start: 30, end: 40, text: '알고리즘은 결국 시청자를 봅니다' }];
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 60, clipCount: 1 }, transcript });
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  const clip = a.shorts.getJob(user.id, job.id).clips[0];
+  // 마무리 구독 카드
+  assert.equal(clip.outro.style, 'subscribe'); assert.match(clip.outro.text, /구독/);
+  const spec = a.library.previewSpec(user.id, 'shorts', clip.id);
+  const last = spec.items[spec.items.length - 1];
+  assert.equal(last.kind, 'card'); assert.equal(last.cta, true); assert.ok(spec.durationSec > clip.durationSec);
+  // 유튜브 최적화
+  const seo = clip.seo;
+  assert.ok(seo && seo.titles.length >= 4 && seo.bestTitle && seo.similarTitle);
+  assert.ok(seo.titles.every((t) => t.text.length <= 60 && t.score > 0));
+  assert.ok(seo.tags.length >= 5 && seo.tags.includes('쇼츠'));
+  assert.equal(seo.hashtags.length, 3); assert.ok(seo.hashtags.includes('#shorts'));
+  assert.ok(seo.keywords.includes('알고리즘') || seo.keywords.includes('썸네일'));
+  assert.match(seo.description, /구독/);
+  assert.ok(seo.checklist.length >= 7 && seo.checklist.find((c) => /구독/.test(c.label)).ok);
+  assert.ok(extractKeywords('썸네일이 썸네일을 썸네일은 제목과 제목은').includes('썸네일'));
+  // 원본 비슷한 제목: 원본 접두/이모지 유지
+  const seo2 = await a.seo.generate({ kind: 'shorts', title: '핵심 정리', hook: '이거 모르면 손해', originalTitle: '[알파채널] 유튜브 성장 비법 총정리 🔥', originalTags: ['유튜브', '성장'], segments: transcript, durationSec: 40 });
+  assert.match(seo2.similarTitle, /^\[알파채널\]/); assert.match(seo2.similarTitle, /🔥$/); assert.ok(seo2.tags.includes('유튜브'));
+  // 썸네일: 자동 제작(유튜브 원본 → 원본과 비슷하게) + 편집
+  const set = a.thumbnail.get(user.id, 'shorts', clip.id);
+  assert.ok(set && set.svg.startsWith('<svg') && set.selectedId === 'original' && set.style === 'original-like');
+  assert.ok(set.candidates.length >= 4 && set.candidates.some((c) => c.id === 'yt-2'));
+  assert.equal(set.width, 1080); assert.equal(set.height, 1920);
+  assert.ok(set.svg.includes('/api/thumbnail/proxy?url=') && set.svg.includes('SHORTS'));
+  const edited = await a.thumbnail.update(user.id, 'shorts', clip.id, { candidateId: 'yt-2', headline: '3가지 비밀', subline: '알고리즘 정복', style: 'big-number', palette: 'red' });
+  assert.equal(edited.selectedId, 'yt-2'); assert.ok(edited.svg.includes('hq2.jpg') && edited.svg.includes('비밀') && edited.svg.includes('#ff3b3b'));
+  const item = a.library.list(user.id).items.find((i) => i.refId === clip.id);
+  assert.match(item.thumbnail, /\/api\/thumbnail\/shorts\//);
+  const frame = a.thumbnail.addUserFrame(user.id, 'shorts', clip.id, { buffer: Buffer.from('jpegdata'), at: 3.5 });
+  assert.ok(a.thumbnail.frameFile(user.id, 'shorts', clip.id, 100).path.endsWith('.jpg') && frame.at === 3.5);
+  assert.ok(!a.thumbnail.isAllowedProxy('https://evil.example.com/a.jpg') && a.thumbnail.isAllowedProxy('https://i.ytimg.com/vi/x/hq1.jpg'));
+  const svg = composeSvg({ width: 1280, height: 720, image: null, headline: '텍스트 없는 배경', subline: '', style: 'split', palette: 'mint', badge: null });
+  assert.ok(svg.includes('bgGrad') && svg.includes('#2dd4bf'));
+  // 재구성도 마무리 구독 카드 + SEO
+  const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 60 }, transcript });
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', remix.id); return j.status === 'done' ? j : null; }, 8000);
+  const lastCard = done.result.timeline[done.result.timeline.length - 1];
+  assert.equal(lastCard.cta, true); assert.match(lastCard.title, /구독/);
+  assert.ok(done.result.seo.bestTitle && done.thumbnailSet.svg);
+  const noOutro = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 60, outro: false }, transcript });
+  const done2 = await waitFor(() => { const j = a.store.get('remixJobs', noOutro.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.ok(!done2.result.timeline.some((t) => t.cta));
+  a.close();
+});
+
+test('서버리스 로그인: 가입 직후 다른 인스턴스에 사용자 레코드가 아직 없어도 서명된 토큰만으로 로그인 상태가 유지된다', async () => {
+  const a = app();
+  const { token, user } = a.auth.signup({ email: 'new@test.com', password: 'secret1', name: '새사용자' });
+  assert.equal(a.auth.userFromToken(token).id, user.id);
+  // 다른 인스턴스: 같은 시크릿, 하지만 저장소에는 관리자만 있음
+  const b = app();
+  const u = b.auth.userFromToken(token);
+  assert.ok(u && u.transient === true && u.id === user.id && u.email === 'new@test.com' && u.name === '새사용자' && u.role === 'user');
+  assert.equal(b.auth.publicUser(u).isAdmin, false);
+  // 위조된 토큰은 여전히 거부
+  assert.equal(b.auth.userFromToken(`${token.split('.')[0]}.bad`), null);
+  a.close(); b.close();
+});
+
+test('저장소 병합: 서로 다른 인스턴스의 변경이 덮어써지지 않고 합쳐지며 삭제 기록이 우선한다', async () => {
+  const { mergeSnapshots } = await import('../src/store.js');
+  const t0 = '2026-01-01T00:00:00.000Z'; const t1 = '2026-01-01T00:01:00.000Z'; const t2 = '2026-01-01T00:02:00.000Z';
+  const remote = { users: [{ id: 'a', name: 'A-old', updatedAt: t0 }, { id: 'b', name: 'B', updatedAt: t0 }], voiceProfiles: [{ id: 'v1', name: '내 목소리', updatedAt: t1 }], tombstones: [] };
+  const local = { users: [{ id: 'a', name: 'A-new', updatedAt: t2 }, { id: 'c', name: 'C', updatedAt: t1 }], voiceProfiles: [], tombstones: [{ collection: 'users', id: 'b', at: t2 }] };
+  const m = mergeSnapshots(remote, local);
+  assert.deepEqual(m.users.map((u) => u.id).sort(), ['a', 'c']);
+  assert.equal(m.users.find((u) => u.id === 'a').name, 'A-new');
+  assert.equal(m.voiceProfiles.length, 1, '다른 인스턴스가 만든 음성 프로필이 사라지면 안 된다');
+  assert.equal(m.tombstones.length, 1);
+  // 삭제보다 나중에 갱신된 레코드는 살아남는다
+  const m2 = mergeSnapshots({ users: [{ id: 'b', updatedAt: '2026-01-01T00:03:00.000Z' }], tombstones: [] }, local);
+  assert.equal(m2.users.some((u) => u.id === 'b'), true);
 });

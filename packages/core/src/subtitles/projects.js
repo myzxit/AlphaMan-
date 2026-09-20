@@ -1,7 +1,7 @@
 // 픽셀링 자막 편집기: 음성 인식 → 의미 기반 분할 → 파형 기반 편집 → 다국어 번역 → SRT/VTT/ASS 내보내기
 import path from 'node:path';
 import { ApiError } from '../errors.js';
-import { parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta } from '../media.js';
+import { parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, ensureLocalFile } from '../media.js';
 import { transcribe, semanticSplit, waveform, splitWords } from './stt.js';
 import { exportSubtitles, parseSRT } from './format.js';
 import { FONTS, SUBTITLE_STYLE_PRESETS } from './fonts.js';
@@ -16,39 +16,42 @@ export class SubtitleProjects {
   fonts() { return FONTS; }
   presets() { return SUBTITLE_STYLE_PRESETS; }
 
-  async createFromUrl(userId, { url, language = 'ko', premium = false }) {
+  async createFromUrl(userId, { url, language = 'ko', premium = false, transcript = null, transcriptText = '' }) {
     const parsed = parseVideoUrl(url);
     let meta = { title: `${parsed.platform} 영상`, durationSec: 60, thumbnail: null };
     if (parsed.platform === 'youtube') meta = await fetchYoutubeMeta(parsed.id);
-    return this._create(userId, { source: { type: 'url', ...parsed, title: meta.title, durationSec: meta.durationSec || 60, thumbnail: meta.thumbnail }, language, premium, notice: parsed.notice || null });
+    return this._create(userId, { source: { type: 'url', ...parsed, videoId: parsed.id, title: meta.title, durationSec: meta.durationSec || 60, thumbnail: meta.thumbnail }, language, premium, notice: parsed.notice || null, extra: { transcript, transcriptText } });
   }
 
-  async createFromUpload(userId, { uploadId, language = 'ko', premium = false }) {
+  async createFromUpload(userId, { uploadId, language = 'ko', premium = false, transcript = null, transcriptText = '' }) {
     const up = this.store.get('uploads', uploadId);
     if (!up || up.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+    await ensureLocalFile(up);
     const meta = await probe(up.path);
     validateVideoMeta({ filename: up.filename, mimeType: up.mimeType, ...meta });
-    return this._create(userId, { source: { type: 'file', uploadId, path: up.path, title: path.parse(up.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height }, language, premium });
+    return this._create(userId, { source: { type: 'file', uploadId, path: up.path, remoteUrl: up.remoteUrl || null, title: path.parse(up.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height }, language, premium, extra: { transcript, transcriptText } });
   }
 
   // 로컬 경로(프로그램 버전: 컴퓨터/USB의 MP4 를 직접 지정)
-  async createFromLocalPath(userId, { filePath, language = 'ko', premium = false }) {
+  async createFromLocalPath(userId, { filePath, language = 'ko', premium = false, transcript = null, transcriptText = '' }) {
     const meta = await probe(filePath);
     validateVideoMeta({ filename: path.basename(filePath), ...meta });
-    return this._create(userId, { source: { type: 'local', path: filePath, title: path.parse(filePath).name, durationSec: meta.durationSec, removable: /^(\/media|\/mnt|\/Volumes|[D-Z]:\\)/i.test(filePath) }, language, premium });
+    return this._create(userId, { source: { type: 'local', path: filePath, title: path.parse(filePath).name, durationSec: meta.durationSec, removable: /^(\/media|\/mnt|\/Volumes|[D-Z]:\\)/i.test(filePath) }, language, premium, extra: { transcript, transcriptText } });
   }
 
-  async _create(userId, { source, language, premium, notice = null }) {
+  async _create(userId, { source, language, premium, notice = null, extra = {} }) {
     const project = this.store.insert('subtitleProjects', {
       userId, source, language, premium, status: 'transcribing', notice: notice || (premium ? PREMIUM_NOTICE : null),
       segments: [], translations: {}, style: SUBTITLE_STYLE_PRESETS[0], engine: null, waveform: null, history: [],
     });
     // 기본 기능 무료: STT 는 이용권을 차감하지 않는다. 프리미엄(일괄 생성)만 길이만큼 차감
     if (premium) this.credits.charge(userId, Math.round((source.durationSec / 60) * 100) / 100, `프리미엄 자막 일괄 생성: ${source.title}`, { projectId: project.id });
-    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language, title: source.title });
+    let stt;
+    try { stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language, title: source.title, source, transcript: extra.transcript || null, transcriptText: extra.transcriptText || '' }); }
+    catch (err) { this.store.remove('subtitleProjects', project.id); if (premium) this.credits.grant(userId, Math.round((source.durationSec / 60) * 100) / 100, '자막 생성 실패 환불', { projectId: project.id }); throw err; }
     const segments = semanticSplit(stt.segments);
     const wf = await waveform({ filePath: source.path, durationSec: source.durationSec, segments });
-    const done = this.store.update('subtitleProjects', project.id, { status: 'ready', segments, engine: stt.engine, waveform: wf });
+    const done = this.store.update('subtitleProjects', project.id, { status: 'ready', segments, engine: stt.engine, transcriptExact: stt.exact !== false, waveform: wf });
     this.notifications?.push(userId, { type: 'subtitle.ready', title: '자막 생성 완료', body: `"${source.title}" 자막 ${segments.length}줄이 준비됐어요.`, link: `#/subtitles/${project.id}` });
     return done;
   }

@@ -1,5 +1,5 @@
 // 인증/계정: 이메일+비밀번호, Google 간편 로그인, 세션, 역할(admin/user), 관리자 전용 계정 시드
-import { randomBytes, scryptSync, timingSafeEqual, randomUUID } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual, createHmac, createHash } from 'node:crypto';
 import { ApiError } from './errors.js';
 
 export const ADMIN_ACCOUNT = Object.freeze({
@@ -10,6 +10,26 @@ export const ADMIN_ACCOUNT = Object.freeze({
 });
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30일
+export const ADMIN_USER_ID = 'user-admin-hhudeu66'; // 인스턴스(서버리스)마다 같은 ID 를 갖도록 고정
+
+// 세션 토큰은 서명된 자체 포함 토큰이라 서버 인스턴스가 여러 개(서버리스)여도 어디서나 검증된다.
+function sessionSecret() {
+  return process.env.ALPHAMAN_SECRET || createHash('sha256').update(`alphaman-session:${ADMIN_ACCOUNT.password}`).digest('hex');
+}
+const b64u = (buf) => Buffer.from(buf).toString('base64url');
+function sign(payload) {
+  const body = b64u(JSON.stringify(payload));
+  const sig = createHmac('sha256', sessionSecret()).update(body).digest('base64url');
+  return `${body}.${sig}`;
+}
+export function verifySessionToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const [body, sig] = token.split('.');
+  if (!body || !sig) return null;
+  const expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url');
+  if (expected.length !== sig.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) return null;
+  try { const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); return payload.exp > Date.now() ? payload : null; } catch { return null; }
+}
 const FREE_SIGNUP_MINUTES = 30; // 회원가입 시 무료 이용권 30분
 
 export function hashPassword(password, salt = randomBytes(16).toString('hex')) {
@@ -50,6 +70,7 @@ export class AuthService {
       return existing;
     }
     const admin = this.store.insert('users', {
+      id: ADMIN_USER_ID,
       email: ADMIN_ACCOUNT.email,
       name: ADMIN_ACCOUNT.name,
       passwordHash: hashPassword(ADMIN_ACCOUNT.password),
@@ -124,24 +145,29 @@ export class AuthService {
   }
 
   createSession(user) {
-    const token = randomUUID() + randomBytes(16).toString('hex');
-    this.store.insert('sessions', { token, userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
+    const exp = Date.now() + SESSION_TTL_MS;
+    const token = sign({ uid: user.id, email: user.email, name: user.name, role: user.role, exp, n: randomBytes(4).toString('hex') });
     this.store.update('users', user.id, { lastLoginAt: new Date().toISOString() });
     return { token, user: this.publicUser(user) };
   }
 
   logout(token) {
-    const s = this.store.findOne('sessions', (x) => x.token === token);
-    if (s) this.store.remove('sessions', s.id);
+    const payload = verifySessionToken(token);
+    if (payload) this.store.insert('sessions', { revoked: token.slice(-32), userId: payload.uid, expiresAt: payload.exp });
     return true;
   }
 
   userFromToken(token) {
-    if (!token) return null;
-    const s = this.store.findOne('sessions', (x) => x.token === token);
-    if (!s) return null;
-    if (s.expiresAt < Date.now()) { this.store.remove('sessions', s.id); return null; }
-    const user = this.store.get('users', s.userId);
+    const payload = verifySessionToken(token);
+    if (!payload) return null;
+    if (this.store.findOne('sessions', (x) => x.revoked === token.slice(-32))) return null;
+    let user = this.store.get('users', payload.uid) || this.store.findOne('users', (u) => u.email === payload.email);
+    if (!user && payload.email === ADMIN_ACCOUNT.email) user = this.seedAdmin();
+    // 서버리스: 방금 가입한 사용자가 아직 이 인스턴스의 저장소에 동기화되지 않았을 수 있다.
+    // 서명이 유효하면 토큰의 정보로 임시 사용자 객체를 만들어 "로그인이 필요합니다" 오류 대신 정상 응답한다 (저장하지는 않음).
+    if (!user && payload.uid && payload.email) {
+      user = { id: payload.uid, email: payload.email, name: payload.name || payload.email.split('@')[0], role: payload.role === 'admin' ? 'user' : (payload.role || 'user'), status: 'active', locale: 'ko', theme: 'system', referralCode: '', createdAt: new Date().toISOString(), transient: true };
+    }
     if (!user || user.status === 'banned') return null;
     return user;
   }

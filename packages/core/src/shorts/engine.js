@@ -2,7 +2,7 @@
 // → 결과 확인/편집/재생성/내보내기. 이용권은 원본 길이(분)만큼 차감, 재생성은 절반.
 import path from 'node:path';
 import { ApiError } from '../errors.js';
-import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, renderClip } from '../media.js';
+import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, renderClip, ensureLocalFile, downloadYoutube, separateVocals, which } from '../media.js';
 import { transcribe, semanticSplit } from '../subtitles/stt.js';
 import { toASS, exportSubtitles } from '../subtitles/format.js';
 import { TEMPLATES, GENRES, RATIOS, detectGenre, templateFor } from './templates.js';
@@ -16,7 +16,11 @@ export const DEFAULT_OPTIONS = Object.freeze({
   speakerTracking: true,     // 화자 추적 + 다이나믹 줌
   voiceEnhance: true,        // 음성 향상 (잡음/배경음 제거)
   aiHookVoice: false,        // AI 후킹 보이스 (첫 3초 멘트 TTS)
-  voiceProfileId: null,      // 내 목소리 프로필 (없으면 기본 AI 보이스)
+  voiceProfileId: null,      // 내 목소리 프로필 (없으면 voiceId 의 무료 한국어 목소리)
+  voiceId: null,             // 무료 목소리 id (없으면 기본 '선희')
+  outro: true,               // 영상 마무리 구독·좋아요·알림 카드
+  outroText: '구독 · 좋아요 · 알림 설정 🔔',
+  outroSec: 2.5,
   ratio: '9:16',
   language: 'ko',
   targetLanguages: [],       // 다국어 번역 자막/제목
@@ -26,8 +30,8 @@ export const DEFAULT_OPTIONS = Object.freeze({
 const STEPS = ['queued', 'downloading', 'transcribing', 'analyzing', 'editing', 'rendering', 'done'];
 
 export class ShortsEngine {
-  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir, voice = null }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice;
+  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir, voice = null, library = null, seo = null, thumbnail = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.library = library; this.seo = seo; this.thumbnail = thumbnail;
     this.notifications = notifications;
     this.uploadsDir = uploadsDir; this.outputDir = outputDir;
     this.timers = new Map();
@@ -39,24 +43,26 @@ export class ShortsEngine {
   ratios() { return RATIOS; }
 
   // 1) 작업 생성 --------------------------------------------------------------
-  async createFromYoutube(userId, { url, options = {} }) {
+  // transcript(브라우저 Whisper 세그먼트) / transcriptText(붙여넣은 대본)는 원본과 똑같은 자막을 위해 옵션으로 함께 저장한다
+  async createFromYoutube(userId, { url, options = {}, transcript = null, transcriptText = '' }) {
     const yt = parseYoutubeUrl(url);
     const meta = await fetchYoutubeMeta(yt.id);
     const durationSec = meta.durationSec || Number(options.estimatedDurationSec) || 600;
     return this._create(userId, {
-      source: { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec },
-      options,
+      source: { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec, tags: meta.tags || [], description: meta.description || '' },
+      options: withTranscript(options, transcript, transcriptText),
     });
   }
 
-  async createFromUpload(userId, { uploadId, options = {} }) {
+  async createFromUpload(userId, { uploadId, options = {}, transcript = null, transcriptText = '' }) {
     const upload = this.store.get('uploads', uploadId);
     if (!upload || upload.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+    await ensureLocalFile(upload);
     const meta = await probe(upload.path);
     validateVideoMeta({ filename: upload.filename, mimeType: upload.mimeType, ...meta });
     return this._create(userId, {
-      source: { type: 'file', uploadId, path: upload.path, title: path.parse(upload.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height, thumbnail: null },
-      options,
+      source: { type: 'file', uploadId, path: upload.path, remoteUrl: upload.remoteUrl || null, title: path.parse(upload.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height, thumbnail: null },
+      options: withTranscript(options, transcript, transcriptText),
     });
   }
 
@@ -91,9 +97,14 @@ export class ShortsEngine {
     if (!job) return;
     const { source, options } = job;
     this._log(jobId, 'downloading', 8, source.type === 'youtube' ? '유튜브 영상을 가져오는 중' : '업로드 파일을 준비하는 중');
+    // 프로그램 버전·자체 호스팅(yt-dlp 있음): 유튜브 원본을 실제로 내려받아 렌더링·썸네일·음원 분리에 사용
+    if (!source.path && source.videoId && which('yt-dlp')) {
+      try { const p = await downloadYoutube(source.videoId, path.join(this.outputDir, job.userId, 'src')); if (p) { source.path = p; this.store.update('jobs', jobId, { source }); } }
+      catch (err) { this._log(jobId, 'downloading', 10, `유튜브 원본 다운로드 실패 (미리보기만 제공): ${err.message}`); }
+    } else if (source.path) await ensureLocalFile(source);
     await this._wait(400);
     this._log(jobId, 'transcribing', 25, '음성을 인식해 대본을 만드는 중 (Whisper)');
-    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: options.language, title: source.title });
+    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: options.language, title: source.title, source, transcript: options.transcript || null, transcriptText: options.transcriptText || '' });
     await this._wait(400);
     this._log(jobId, 'analyzing', 45, 'AI가 하이라이트 구간을 찾는 중');
     const genre = options.genre && GENRES.some((g) => g.id === options.genre) ? options.genre : detectGenre(source.title, stt.segments.map((s) => s.text).join(' '));
@@ -106,13 +117,16 @@ export class ShortsEngine {
       const clip = await this.buildClip({ job, index: i, highlight: h, segments: stt.segments, template, genre });
       clipIds.push(clip.id);
     }
-    this.store.update('jobs', jobId, { clipIds, genre, transcriptEngine: stt.engine, segmentCount: stt.segments.length });
+    this.store.update('jobs', jobId, { clipIds, genre, transcriptEngine: stt.engine, transcriptExact: stt.exact !== false, segmentCount: stt.segments.length });
     await this._wait(300);
     this._log(jobId, 'rendering', 85, '클립을 렌더링하는 중');
     for (const id of clipIds) await this.render(id);
     this._log(jobId, 'done', 100, `쇼츠 ${clipIds.length}개 제작 완료`);
-    this.store.update('jobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
-    this.notifications?.push(job.userId, { type: 'shorts.done', title: '쇼츠 제작 완료', body: `"${source.title}" 에서 쇼츠 ${clipIds.length}개가 완성됐어요.`, link: `#/studio/${jobId}` });
+    const done = this.store.update('jobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
+    // 보관함에 자동 저장 (완성된 클립마다 한 항목)
+    if (this.library) this.library.addShortsJob(done, clipIds.map((id) => this.store.get('clips', id)).filter(Boolean));
+    if (this.thumbnail) for (const id of clipIds) await this.thumbnail.auto(job.userId, 'shorts', id).catch((e) => console.warn('[shorts] 썸네일 자동 제작 실패:', e.message)); // 썸네일 자동 제작
+    this.notifications?.push(job.userId, { type: 'shorts.done', title: '쇼츠 제작 완료', body: `"${source.title}" 에서 쇼츠 ${clipIds.length}개가 완성됐어요. 보관함에서 미리 볼 수 있어요.`, link: `#/studio/${jobId}` });
   }
 
   _fail(jobId, err) {
@@ -209,23 +223,31 @@ export class ShortsEngine {
     }
 
     const durationSec = round(highlight.end - highlight.start - removed + (hook ? 0 : 0));
+    // 영상 마무리: 구독·좋아요·알림 CTA 카드
+    const outro = opts.outro === false ? null : { text: opts.outroText || DEFAULT_OPTIONS.outroText, durationSec: Number(opts.outroSec) || 2.5, style: 'subscribe', channel: job.source.channel || null };
+    // 유튜브 최적화: 원본과 비슷한 제목 + 추천 알고리즘용 제목/태그/설명
+    const seo = this.seo ? await this.seo.generate({ kind: 'shorts', title: highlight.title, hook: hook?.text || '', originalTitle: job.source.title, originalTags: job.source.tags || [], originalDescription: job.source.description || '', channel: job.source.channel || '', segments: segs, genre, durationSec, language: opts.language }).catch(() => null) : null;
     return this.store.insert('clips', {
       jobId: job.id, userId: job.userId, index, title: highlight.title, reason: highlight.reason, score: highlight.score,
       start: highlight.start, end: highlight.end, durationSec, ratio: opts.ratio, templateId: template.id, genre,
-      hook, cuts, zoomKeyframes, subtitles, translations,
+      hook, cuts, zoomKeyframes, subtitles, translations, outro, seo,
       audio: { voiceEnhance: opts.voiceEnhance ? { denoise: true, removeMusic: true, loudnessLUFS: -14 } : null, aiHookVoice: opts.aiHookVoice && hook ? await this._hookVoice(job, hook, index) : null },
       status: 'edited', render: null, thumbnail: job.source.thumbnail, sourceTitle: job.source.title,
     });
   }
 
-  // AI 후킹 보이스: 내 목소리 프로필이 있으면 그 목소리로, 없으면 기본 AI 보이스
+  // AI 후킹 보이스: 내 목소리 프로필이 있으면 그 목소리로, 없으면 선택한(또는 기본) 무료 한국어 목소리
   async _hookVoice(job, hook, index) {
     const base = { text: hook.text, durationSec: 3 };
-    if (job.options.voiceProfileId && this.voice) {
-      try { const r = await this.voice.synthesize(job.userId, { profileId: job.options.voiceProfileId, text: hook.text, style: 'hook', outputName: `hook-${job.id.slice(0, 8)}-${index + 1}` }); return { ...base, voice: 'my-voice', voiceProfileId: job.options.voiceProfileId, audioPath: r.audioPath, engine: r.engine }; }
-      catch (err) { console.warn('[shorts] 내 목소리 합성 실패, 기본 보이스 사용:', err.message); }
+    if (!this.voice) return { ...base, voice: 'ko-sunhi', engine: 'default' };
+    if (job.options.voiceProfileId) {
+      try { const r = await this.voice.synthesize(job.userId, { profileId: job.options.voiceProfileId, text: hook.text, style: 'hook', outputName: `hook-${job.id.slice(0, 8)}-${index + 1}` }); return { ...base, voice: 'my-voice', voiceProfileId: job.options.voiceProfileId, audioPath: r.audioPath, engine: r.engine, renderId: r.id }; }
+      catch (err) { console.warn('[shorts] 내 목소리 합성 실패, 무료 목소리 사용:', err.message); }
     }
-    return { ...base, voice: 'ko-female-bright', engine: 'default' };
+    try {
+      const r = await this.voice.synthesize(job.userId, { voiceId: job.options.voiceId || null, text: hook.text, style: 'hook', outputName: `hook-${job.id.slice(0, 8)}-${index + 1}` });
+      return { ...base, voice: r.voiceId, voiceName: r.voiceName, audioPath: r.audioPath, engine: r.engine, browser: r.browser || null, renderId: r.id };
+    } catch (err) { return { ...base, voice: 'ko-sunhi', engine: 'default', error: err.message }; }
   }
 
   // 5) 렌더링: ffmpeg 이 있으면 실제 파일 생성, 없으면 렌더 계획 저장
@@ -237,11 +259,18 @@ export class ShortsEngine {
     const out = path.join(this.outputDir, job.userId, `${clip.id}.mp4`);
     let result = { rendered: false, plan: null };
     if (job.source.path) {
-      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio });
+      await ensureLocalFile(job.source);
+      // 음성 향상(배경음악 제거)이 켜져 있고 demucs 가 있으면 목소리 트랙만 남긴다
+      let vocalsPath = null;
+      if (clip.audio?.voiceEnhance?.removeMusic && which('demucs')) { vocalsPath = job.vocalsPath || await separateVocals(job.source.path, path.join(this.outputDir, job.userId, 'stems')); if (vocalsPath) this.store.update('jobs', job.id, { vocalsPath }); }
+      const hookAudio = clip.audio?.aiHookVoice?.audioPath || null;
+      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio, outro: clip.outro || null, hookAudio, vocalsPath });
     } else {
       result = { rendered: false, plan: { note: '유튜브 원본은 yt-dlp 로 내려받은 뒤 렌더링됩니다.', ratio: clip.ratio, start: clip.start, end: clip.end } };
     }
-    return this.store.update('clips', clipId, { status: 'ready', render: { ...result, subtitleASS: ass, templateId: template.id, renderedAt: new Date().toISOString() } });
+    const updated = this.store.update('clips', clipId, { status: 'ready', render: { ...result, subtitleASS: ass, templateId: template.id, renderedAt: new Date().toISOString() } });
+    if (this.library && job.status === 'done') this.library.addShortsJob(job, [updated]); // 재렌더/편집 후 보관함 항목 갱신
+    return updated;
   }
 
   // 6) 결과 조회/편집/재생성/내보내기 ---------------------------------------------
@@ -270,6 +299,7 @@ export class ShortsEngine {
     }
     if (patch.subtitles) allowed.subtitles = patch.subtitles.map((s, i) => ({ id: s.id || `seg-${i + 1}`, start: Number(s.start), end: Number(s.end), text: String(s.text), words: s.words || [], animation: s.animation || 'none' }));
     if (patch.hookText != null) allowed.hook = { ...(clip.hook || { style: 'custom', durationSec: 3, position: 'start' }), text: String(patch.hookText) };
+    if (patch.outro !== undefined) allowed.outro = patch.outro ? { ...(clip.outro || { durationSec: 2.5, style: 'subscribe', channel: null }), text: String(patch.outro.text || patch.outro || DEFAULT_OPTIONS.outroText).slice(0, 60) } : null;
     if (typeof patch.removeSilence === 'boolean' && !patch.removeSilence) allowed.cuts = [];
     const updated = this.store.update('clips', clipId, { ...allowed, status: 'edited' });
     this.store.insert('auditLog', { userId, action: 'clip.edit', clipId, patch: Object.keys(allowed) });
@@ -282,7 +312,7 @@ export class ShortsEngine {
     if (job.status !== 'done' && job.status !== 'failed') throw new ApiError(409, '진행 중인 작업은 재생성할 수 없습니다.');
     const half = Math.round((job.minutesCharged / 2) * 100) / 100;
     this.credits.charge(userId, half, `쇼츠 재생성(50%): ${job.source.title}`, { jobId });
-    for (const id of job.clipIds) this.store.remove('clips', id);
+    for (const id of job.clipIds) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); }
     this.store.update('jobs', jobId, { status: 'queued', step: 'queued', progress: 0, clipIds: [], error: null, regenerations: job.regenerations + 1, log: [{ at: new Date().toISOString(), step: 'queued', message: '재생성 요청 (이용권 50% 차감)' }] });
     this._schedule(jobId);
     return this.store.get('jobs', jobId);
@@ -309,7 +339,7 @@ export class ShortsEngine {
   deleteJob(userId, jobId) {
     const job = this.store.get('jobs', jobId);
     if (!job || job.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.');
-    for (const id of job.clipIds) this.store.remove('clips', id);
+    for (const id of job.clipIds) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); }
     this.store.remove('jobs', jobId);
     return true;
   }
@@ -317,6 +347,12 @@ export class ShortsEngine {
 
 function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
 function round(n) { return Math.round(n * 100) / 100; }
+export function withTranscript(options, transcript, transcriptText) {
+  const out = { ...options };
+  if (Array.isArray(transcript) && transcript.length) out.transcript = transcript;
+  if (transcriptText && String(transcriptText).trim()) out.transcriptText = String(transcriptText);
+  return out;
+}
 function makeTitle(text) {
   const t = text.replace(/[.!?。]+$/, '').trim();
   const short = t.length > 22 ? `${t.slice(0, 20)}…` : t;

@@ -166,9 +166,22 @@ export async function legal({ view, state, path }) {
 }
 
 export async function download({ view, state }) {
-  view.innerHTML = html`<div class="section-head"><h1>프로그램 버전 다운로드</h1><p>웹사이트 버전의 모든 기능 + 컴퓨터/USB 영상 직접 열기, 로컬 ffmpeg/Whisper 렌더링, 트레이 알림</p></div>
-    <div class="grid grid-3">${raw(['Windows (.exe)', 'macOS (.dmg)', 'Linux (.AppImage)'].map((n) => `<div class="card" style="text-align:center"><h3>${esc(n)}</h3><p class="muted small">저장소에서 <code>npm run desktop:build</code> 로 설치 파일을 만들 수 있습니다.</p><a class="btn btn-primary" href="https://github.com/myzxit/AlphaMan-/releases" target="_blank" rel="noopener">릴리스 페이지</a></div>`).join(''))}</div>
-    <div class="card" style="margin-top:16px"><h3>개발자용 실행</h3><pre class="log">npm install\nnpm run desktop        # 프로그램 버전 실행\nnpm run web            # 웹사이트 버전 실행 (http://localhost:4100)</pre><p class="small muted">현재 실행 중: <b>${state.desktop ? '프로그램 버전' : '웹사이트 버전'}</b></p></div>`;
+  const v = state.info.version;
+  const rel = `https://github.com/myzxit/AlphaMan-/releases/download/v${v}`;
+  const files = [
+    ['Windows', '설치형 (.exe)', `${rel}/AlphaMan-${v}-win-x64.exe`], ['Windows', '무설치 포터블 (.exe)', `${rel}/AlphaMan-${v}-win-x64-portable.exe`],
+    ['macOS', 'Apple Silicon (.dmg)', `${rel}/AlphaMan-${v}-mac-arm64.dmg`], ['macOS', 'Intel (.dmg)', `${rel}/AlphaMan-${v}-mac-x64.dmg`],
+    ['Linux', 'AppImage', `${rel}/AlphaMan-${v}-linux-x86_64.AppImage`], ['Linux', 'Debian/Ubuntu (.deb)', `${rel}/AlphaMan-${v}-linux-amd64.deb`],
+  ];
+  view.innerHTML = html`<div class="section-head"><h1>다운로드</h1><p>웹사이트 버전은 설치 없이 바로, 프로그램 버전은 PC 에 설치해서 사용하세요. 두 버전의 기능은 같습니다.</p></div>
+    <div class="grid grid-2"><div class="card"><h3>🌐 웹사이트 버전</h3><p class="muted small">브라우저에서 바로 사용. 설치 불필요.</p><a class="btn btn-primary btn-lg" href="https://alphaman.vercel.app" target="_blank" rel="noopener">alphaman.vercel.app 열기</a><div class="tiny muted" style="margin-top:8px">현재 실행 중: <b>${state.desktop ? '프로그램 버전' : '웹사이트 버전'}</b> · 버전 ${v}</div></div>
+    <div class="card"><h3>💻 프로그램(PC) 버전 v${v}</h3><p class="muted small">컴퓨터/USB 영상 직접 열기, 로컬 ffmpeg/Whisper 렌더링, 트레이 알림이 추가됩니다.</p><div class="table-wrap"><table class="table"><tr><th>OS</th><th>파일</th><th></th></tr>${raw(files.map(([os, label, href]) => `<tr><td>${esc(os)}</td><td>${esc(label)}</td><td><a class="btn btn-sm" href="${esc(href)}">다운로드</a></td></tr>`).join(''))}</table></div><a class="small" href="https://github.com/myzxit/AlphaMan-/releases" target="_blank" rel="noopener">모든 릴리스 보기 →</a></div></div>
+    <div class="card" style="margin-top:16px"><h3>설치 안내</h3><ul class="small muted"><li><b>Windows</b>: SmartScreen 경고가 뜨면 "추가 정보 → 실행" 을 누르세요 (코드 서명 전).</li><li><b>macOS</b>: 처음 실행 시 Finder 에서 앱을 우클릭 → "열기" 를 선택하세요 (서명되지 않은 앱).</li><li><b>Linux</b>: AppImage 는 <code>chmod +x</code> 후 실행, .deb 는 <code>sudo dpkg -i</code> 로 설치합니다.</li><li>관리자 로그인: <code>hhudeu66@gmail.com</code></li></ul></div>
+    <div class="card" style="margin-top:16px"><h3>개발자용 실행 / 자체 호스팅</h3><pre class="log">npm install
+npm run web            # 웹사이트 버전 (http://localhost:4100)
+npm run desktop        # 프로그램 버전 실행
+npm run desktop:build  # 설치 파일 직접 빌드 → release/
+docker compose up -d   # 영구 데이터 볼륨을 가진 자체 호스팅</pre></div>`;
 }
 
 export async function notices({ view, state }) {

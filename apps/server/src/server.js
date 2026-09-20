@@ -16,10 +16,11 @@ export function createApp(opts = {}) {
   return new AlphaMan(opts);
 }
 
-export function createHttpServer(app, { webDir = DEFAULT_WEB_DIR } = {}) {
+// 요청 핸들러: Node http 서버와 서버리스(Vercel 등) 양쪽에서 동일하게 사용
+export function createRequestHandler(app, { webDir = DEFAULT_WEB_DIR } = {}) {
   const api = buildApi(app);
 
-  return http.createServer(async (req, res) => {
+  return async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const started = Date.now();
     res.setHeader('X-AlphaMan-Platform', app.platform);
@@ -43,10 +44,8 @@ export function createHttpServer(app, { webDir = DEFAULT_WEB_DIR } = {}) {
         }
         const ctx = { req, res, headers: req.headers, params: match.params, query: Object.fromEntries(url.searchParams), body, raw, token, user, app };
         const result = await match.handler(ctx);
-        if (result && result._file) {
-          res.writeHead(200, { 'Content-Type': result.mime, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}` });
-          return fs.createReadStream(result._file).pipe(res);
-        }
+        if (result && result._sent) return undefined; // 핸들러가 직접 응답을 보낸 경우
+        if (result && result._file) return sendFile(req, res, result);
         if (result && result._raw != null) {
           res.writeHead(200, { 'Content-Type': `${result.mime}; charset=utf-8`, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}` });
           return res.end(result._raw);
@@ -61,7 +60,11 @@ export function createHttpServer(app, { webDir = DEFAULT_WEB_DIR } = {}) {
     } finally {
       if (process.env.ALPHAMAN_LOG) console.log(`${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - started}ms`);
     }
-  });
+  };
+}
+
+export function createHttpServer(app, opts = {}) {
+  return http.createServer(createRequestHandler(app, opts));
 }
 
 export async function startServer({ port = 4100, host = '127.0.0.1', dataDir, platform = 'web', webDir } = {}) {
@@ -90,12 +93,34 @@ function bearer(req) {
 }
 
 function readBody(req) {
+  if (Buffer.isBuffer(req.body)) return Promise.resolve(req.body); // 서버리스 런타임이 이미 본문을 읽은 경우
+  if (typeof req.body === 'string') return Promise.resolve(Buffer.from(req.body));
+  if (req.body && typeof req.body === 'object' && !req.readable) return Promise.resolve(Buffer.from(JSON.stringify(req.body)));
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
     req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { reject(new ApiError(413, '파일이 너무 큽니다 (최대 2GB).')); req.destroy(); } else chunks.push(c); });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+// 파일 응답: 다운로드(attachment) 또는 미리보기 스트리밍(inline). Range 요청을 지원해 <video> 탐색(seek)이 된다.
+function sendFile(req, res, { _file: file, mime = 'application/octet-stream', filename = path.basename(file), inline = false }) {
+  if (!fs.existsSync(file)) return json(res, 404, { error: '파일을 찾을 수 없습니다.' });
+  const size = fs.statSync(file).size;
+  const disposition = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  const range = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+  if (range && size > 0) {
+    let start = range[1] === '' ? Math.max(0, size - Number(range[2])) : Number(range[1]);
+    let end = range[2] === '' || range[1] === '' ? size - 1 : Math.min(size - 1, Number(range[2]));
+    if (!(start <= end) || start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end(); }
+    res.writeHead(206, { 'Content-Type': mime, 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Accept-Ranges': 'bytes', 'Content-Disposition': disposition, 'Cache-Control': 'private, max-age=0' });
+    if (req.method === 'HEAD') return res.end();
+    return fs.createReadStream(file, { start, end }).pipe(res);
+  }
+  res.writeHead(200, { 'Content-Type': mime, 'Content-Length': size, 'Accept-Ranges': 'bytes', 'Content-Disposition': disposition, 'Cache-Control': 'private, max-age=0' });
+  if (req.method === 'HEAD') return res.end();
+  return fs.createReadStream(file).pipe(res);
 }
 
 function json(res, status, data) {
