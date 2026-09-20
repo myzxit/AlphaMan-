@@ -42,6 +42,7 @@ export function extractKeywords(text, limit = 12) {
   for (const raw of String(text || '').split(/[\s,.!?~()\[\]"'“”‘’:;|/\\#]+/)) {
     let w = raw.trim();
     if (!w || w.length < 2 || /^\d+$/.test(w) || STOP.has(w)) continue;
+    if (/(습니다|니다|세요|어요|아요|해요|네요|까요|죠|었다|였다|한다|된다|이다|하고|해서|하면|이면|라서)$/.test(w)) continue; // 서술어(동사·형용사 어미)는 태그로 부적합
     if (/[가-힣]/.test(w) && w.length > 2) w = w.replace(PARTICLES, '');
     if (w.length < 2 || STOP.has(w)) continue;
     // 한국어 대본에서는 한글 키워드를 우선 (원본 제목의 영문 고유명사가 앞서지 않도록)
