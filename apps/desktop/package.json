@@ -108,7 +108,8 @@
     "portable": {
       "artifactName": "AlphaMan-${version}-win-${arch}-portable.${ext}"
     },
-    "publish": null
+    "publish": null,
+    "executableName": "alphaman"
   },
   "author": {
     "name": "AlphaMan",

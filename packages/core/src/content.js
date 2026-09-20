@@ -95,7 +95,7 @@ export const CONTENT = {
   footer: {
     columns: [
       { title: '서비스', links: [['요금제', '#/pricing'], ['AI 재구성', '#/remix'], ['내 목소리 TTS', '#/voice'], ['롱폼 컷편집', '#/longform'], ['알파토픽', '#/topic'], ['SNS 업로드', '#/publish'], ['추천인 보상 제도', '#/referral'], ['무료 도구', '#/tools'], ['디스커버리', '#/discovery'], ['자막 편집기', '#/subtitles']] },
-      { title: '지원', links: [['사용 가이드', '#/guide'], ['팀 소개', '#/team'], ['문의하기', '#/support'], ['공지사항', '#/notices'], ['프로그램 다운로드', '#/download']] },
+      { title: '지원', links: [['사용 가이드', '#/guide'], ['팀 소개', '#/team'], ['문의하기', '#/support'], ['공지사항', '#/notices'], ['다운로드 (웹/PC)', '#/download']] },
       { title: '법적 정보', links: [['이용약관', '#/terms'], ['개인정보처리방침', '#/privacy'], ['환불정책', '#/refund'], ['오픈소스 고지', '#/open-source']] },
     ],
     company: ['상호명: (주)알파맨', '대표자: 관리자', '사업자등록번호: 000-00-00000', '통신판매업신고번호: 제2026-서울-0000호', '사업장 주소: 서울특별시', '© 2026 AlphaMan. All rights reserved.'],

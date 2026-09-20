@@ -5,6 +5,16 @@
 
 기능 목록 전체와 원본(alphacut.video / app.pixeling.io) 대응표는 [FEATURES.md](./FEATURES.md) 를 보세요.
 
+## 바로 사용하기
+
+| 버전 | 링크 |
+|---|---|
+| 🌐 **웹사이트 버전** | **https://alphaman.vercel.app** (설치 없이 브라우저에서 바로) |
+| 💻 **프로그램(PC) 버전** | **https://github.com/myzxit/AlphaMan-/releases/latest** — Windows `.exe`(설치형/포터블), macOS `.dmg`(Apple Silicon/Intel), Linux `.AppImage`/`.deb` |
+
+> 웹사이트 버전(Vercel)은 서버리스 데모라 데이터가 인스턴스마다 휘발됩니다(관리자 계정은 항상 로그인 가능). 영구 데이터가 필요하면 아래 Docker/VPS 방식으로 직접 호스팅하세요.
+> 프로그램 버전은 코드 서명 전이라 Windows SmartScreen 은 "추가 정보 → 실행", macOS 는 앱 우클릭 → "열기" 로 실행합니다.
+
 ## 빠른 시작
 
 ```bash
@@ -14,7 +24,14 @@ npm run desktop        # 프로그램 버전 (Electron 창이 열리고 내장 �
 npm test               # 코어 + API 테스트 (12개)
 npm run check          # 전체 JS 구문 검사
 npm run desktop:build  # Windows(.exe/portable) · macOS(.dmg) · Linux(.AppImage/.deb) 설치 파일 생성 → release/
+docker compose up -d   # 자체 호스팅 (영구 데이터 볼륨 /data, ffmpeg 포함) → http://localhost:4100
 ```
+
+## 배포 · 릴리스
+
+- **웹사이트**: `vercel.json` + `api/index.js` 로 Vercel 에 배포됩니다(`main` 푸시 시 자동). 다른 서버에서는 `Dockerfile`/`docker-compose.yml` 또는 `npm run web` 을 사용하세요.
+- **PC 설치 파일**: `v*` 태그를 푸시하면 GitHub Actions(`.github/workflows/release.yml`)가 Windows/macOS/Linux 러너에서 설치 파일을 빌드해 GitHub Release 에 첨부합니다. 수동 실행은 Actions 탭의 "Release (PC 설치 파일)" → Run workflow.
+- **CI**: `.github/workflows/ci.yml` 이 푸시/PR 마다 구문 검사와 테스트를 실행합니다.
 
 Node.js 20.10 이상이 필요합니다. 외부 런타임 의존성은 없습니다(저장소는 JSON 파일, 서버는 Node 내장 `http`).
 
