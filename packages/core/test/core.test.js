@@ -197,3 +197,92 @@ test('알파토픽 · 롱폼 · 무료 도구 · 번역 · 결제', async () => 
   assert.equal(a.credits.balance(user.id), 415);
   a.close();
 });
+
+test('관리자 이용권 무제한: 차감되지 않고 잔액은 무제한으로 표시', async () => {
+  const a = app();
+  const admin = a.auth.login({ email: ADMIN_ACCOUNT.email, password: ADMIN_ACCOUNT.password }).user;
+  assert.equal(admin.creditsUnlimited, true);
+  assert.equal(admin.credits, null);
+  assert.equal(a.credits.balance(admin.id), Infinity);
+  const job = await a.shorts.createFromYoutube(admin.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 60 * 600 } });
+  assert.equal(job.minutesCharged, 600);
+  assert.equal(a.credits.balance(admin.id), Infinity);
+  assert.ok(a.credits.ledger(admin.id).some((l) => l.delta === 0 && l.wouldCharge === -600));
+  const normal = a.auth.signup({ email: 'n@test.com', password: 'secret1' }).user;
+  assert.equal(normal.creditsUnlimited, false);
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  a.close();
+});
+
+test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타일 반영, 자막·효과음·배경음 재구성, 다시 만들기 50%', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'r@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 200, 'test');
+  await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: false }), /권리/);
+  await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 40 } }), /1~28분/);
+  await assert.rejects(() => a.remix.create(user.id, { rightsConfirmed: true }), /링크 또는 파일/);
+  const job = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', referenceUrl: 'https://www.youtube.com/watch?v=zyxwvutsrqp', rightsConfirmed: true, options: { targetMinutes: 3, estimatedDurationSec: 20 * 60 } });
+  assert.equal(job.minutesCharged, 20);
+  assert.equal(a.credits.balance(user.id), 210);
+  assert.ok(job.reference);
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', job.id); return j.status === 'done' ? j : null; }, 8000);
+  const r = done.result;
+  assert.ok(r.styleProfile && r.styleProfile.pacing);
+  assert.ok(r.finalDurationSec >= 60 && r.finalDurationSec <= 28 * 60);
+  assert.ok(Math.abs(r.finalDurationSec - 180) <= 30, `목표 3분 근처여야 함: ${r.finalDurationSec}`);
+  assert.ok(r.plan.keep.length > 0);
+  assert.ok(r.subtitles.length > 0);
+  assert.ok(r.sfx.length > 0);
+  assert.ok(r.bgm && r.bgm.track);
+  assert.ok(r.cleaning.steps.some((s) => s.id === 'burned-subtitles'));
+  assert.ok(r.cleaning.steps.some((s) => s.id === 'audio-separation'));
+  assert.ok(r.render.plan || r.render.rendered);
+  assert.match(r.render.subtitleASS, /Dialogue/);
+  const edited = a.remix.updateResult(user.id, job.id, { title: '새 제목', sfx: [{ at: 1, name: 'pop' }] });
+  assert.equal(edited.result.plan.title, '새 제목');
+  assert.equal(edited.result.sfx.length, 1);
+  await a.remix.regenerate(user.id, job.id);
+  assert.equal(a.credits.balance(user.id), 200);
+  await waitFor(() => a.store.get('remixJobs', job.id).status === 'done', 8000);
+  // 원본이 목표보다 짧으면 전체 유지
+  const short = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 10, estimatedDurationSec: 90 } });
+  const sdone = await waitFor(() => { const j = a.store.get('remixJobs', short.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.ok(sdone.result.finalDurationSec <= 90);
+  a.close();
+});
+
+test('내 목소리 TTS: 샘플 업로드 → 프로필 → 합성, 쇼츠 후킹 보이스와 재구성 내레이션에 사용', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'v@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 100, 'test');
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-voice-'));
+  const sample = path.join(dir, 'me.wav'); fs.writeFileSync(sample, Buffer.alloc(16 * 1024 * 20)); // 추정 20초
+  const tooShort = path.join(dir, 'short.wav'); fs.writeFileSync(tooShort, Buffer.alloc(16 * 1024 * 2));
+  const up = a.registerUpload(user.id, { filename: 'me.wav', mimeType: 'audio/wav', size: 1, path: sample });
+  const upShort = a.registerUpload(user.id, { filename: 'short.wav', mimeType: 'audio/wav', size: 1, path: tooShort });
+  await assert.rejects(() => a.voice.createProfile(user.id, { uploadId: up.id, consent: false }), /본인의 목소리/);
+  await assert.rejects(() => a.voice.createProfile(user.id, { uploadId: upShort.id, consent: true }), /최소 5초/);
+  const profile = await a.voice.createProfile(user.id, { uploadId: up.id, name: '내 목소리', consent: true });
+  assert.equal(profile.status, 'ready');
+  assert.ok(profile.sampleDurationSec >= 5);
+  const tts = await a.voice.synthesize(user.id, { profileId: profile.id, text: '아직도 모르셨나요? 오늘 정리해 드릴게요.', style: 'hook' });
+  assert.ok(tts.estimatedSec > 0);
+  assert.ok(['simulated', 'xtts', 'elevenlabs'].includes(tts.engine));
+  assert.equal(a.voice.renders(user.id).length, 1);
+  // 쇼츠 AI 후킹 보이스에 내 목소리 사용
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, aiHookVoice: true, voiceProfileId: profile.id } });
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  const clip = a.shorts.getJob(user.id, job.id).clips[0];
+  assert.equal(clip.audio.aiHookVoice.voice, 'my-voice');
+  assert.equal(clip.audio.aiHookVoice.voiceProfileId, profile.id);
+  // 재구성 내레이션
+  await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'intro', estimatedDurationSec: 300 } }), /음성 프로필/);
+  const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'full', voiceProfileId: profile.id, estimatedDurationSec: 300 } });
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', remix.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.ok(done.result.narration.lines.length >= 2);
+  assert.equal(done.result.narration.voiceProfileId, profile.id);
+  a.voice.remove(user.id, profile.id);
+  assert.equal(a.voice.list(user.id).length, 0);
+  a.close();
+});

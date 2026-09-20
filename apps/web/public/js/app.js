@@ -1,8 +1,9 @@
 // 앱 셸: 해시 라우터, 사이드바, 테마, 알림(Alt+T), 픽시(Ctrl+K), 의견 보내기, 프로그램(데스크톱) 브리지 감지
 import { get, post, setToken, getToken } from './api.js';
-import { esc, html, raw, toast, modal, fmtDate, qs, qsa, on } from './ui.js';
+import { esc, html, raw, toast, modal, fmtDate, creditsLabel, qs, qsa, on } from './ui.js';
 import * as pub from './pages-public.js';
 import * as appPages from './pages-app.js';
+import * as remixPages from './pages-remix.js';
 import * as admin from './pages-admin.js';
 
 export const state = { user: null, info: null, notices: [], unread: 0, desktop: Boolean(window.alphaman && window.alphaman.isDesktop), pixieThread: null };
@@ -13,6 +14,7 @@ const ROUTES = [
   ['/download', pub.download], ['/notices', pub.notices], ['/blog', pub.blog], ['/longform-landing', pub.landingLongform], ['/publish-landing', pub.landingPublish], ['/topic-landing', pub.landingTopic],
   ['/dashboard', appPages.dashboard], ['/studio', appPages.studio], ['/studio/:id', appPages.studioJob], ['/longform', appPages.longform], ['/longform/:id', appPages.longform],
   ['/subtitles', appPages.subtitles], ['/subtitles/:id', appPages.subtitleEditor], ['/discovery', appPages.discovery], ['/discovery/:tab', appPages.discovery],
+  ['/remix', remixPages.remix], ['/remix/:id', remixPages.remixJob], ['/voice', remixPages.voice],
   ['/publish', appPages.publish], ['/topic', appPages.topic], ['/translate', appPages.translate], ['/account', appPages.account], ['/support', appPages.support], ['/support/:id', appPages.support], ['/credits', appPages.credits],
   ['/admin', admin.dashboard], ['/admin/:section', admin.section], ['/admin/:section/:id', admin.section],
 ];
@@ -57,7 +59,7 @@ async function render() {
 
 const NAV = [
   { group: '시작', items: [['/', '🏠', '홈'], ['/dashboard', '📊', '대시보드', true]] },
-  { group: '알파컷 · 쇼츠', items: [['/studio', '✂️', '쇼츠 스튜디오', true], ['/longform', '🎬', '롱폼 컷편집', true], ['/publish', '📤', 'SNS 업로드', true], ['/topic', '📈', '알파토픽', true], ['/translate', '🌐', '다국어 번역', true]] },
+  { group: '알파컷 · 쇼츠', items: [['/studio', '✂️', '쇼츠 스튜디오', true], ['/remix', '🪄', 'AI 재구성', true], ['/voice', '🎤', '내 목소리 TTS', true], ['/longform', '🎬', '롱폼 컷편집', true], ['/publish', '📤', 'SNS 업로드', true], ['/topic', '📈', '알파토픽', true], ['/translate', '🌐', '다국어 번역', true]] },
   { group: '픽셀링 · 자막', items: [['/subtitles', '💬', '자막 편집기', true], ['/discovery', '🔥', '디스커버리']] },
   { group: '더보기', items: [['/pricing', '💳', '가격 안내'], ['/tools', '🧰', '무료 도구'], ['/guide', '📖', '사용 가이드'], ['/faq', '❓', 'FAQ'], ['/referral', '🎁', '추천인 보상'], ['/support', '🛟', '문의하기', true], ['/notices', '📢', '공지사항'], ['/download', '💾', '프로그램 다운로드']] },
 ];
@@ -67,7 +69,7 @@ function renderSidebar() {
   const groups = NAV.map((g) => ({ ...g }));
   if (state.user && state.user.isAdmin) groups.push({ group: '관리자', items: [['/admin', '🛡️', '관리자 대시보드'], ['/admin/users', '👥', '사용자 관리'], ['/admin/inquiries', '📨', '문의 관리'], ['/admin/notices', '📌', '공지 관리'], ['/admin/settings', '⚙️', '시스템 설정']] });
   qs('#sidebar-nav').innerHTML = groups.map((g) => `<div class="nav-group-title">${esc(g.group)}</div>${g.items.map(([href, ico, label]) => `<a class="nav-item ${path === href || (href !== '/' && path.startsWith(`${href}/`)) ? 'active' : ''}" href="#${href}"><span class="ico">${ico}</span><span class="label">${esc(label)}</span></a>`).join('')}`).join('');
-  qs('#sidebar-foot').innerHTML = state.user ? `<div><strong>${esc(state.user.name)}</strong><div class="tiny">${esc(state.user.email)}</div><div class="tiny">이용권 ${state.user.credits}분 · <a href="#/credits">충전</a></div></div>` : '<a class="btn btn-primary btn-sm btn-block" href="#/signup">무료 시작</a>';
+  qs('#sidebar-foot').innerHTML = state.user ? `<div><strong>${esc(state.user.name)}</strong><div class="tiny">${esc(state.user.email)}</div><div class="tiny">이용권 ${creditsLabel(state.user)} · <a href="#/credits">충전</a></div></div>` : '<a class="btn btn-primary btn-sm btn-block" href="#/signup">무료 시작</a>';
 }
 
 function renderUserMenu() {

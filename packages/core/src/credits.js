@@ -27,9 +27,22 @@ export class CreditService {
     this.store = store;
   }
 
+  // 관리자 계정은 이용권 무제한: 잔액 조회는 Infinity, 차감은 기록만 남기고 잔액을 줄이지 않는다.
+  isUnlimited(userId) {
+    const user = this.store.get('users', userId);
+    return Boolean(user && (user.role === 'admin' || user.unlimitedCredits));
+  }
+
   balance(userId) {
+    if (this.isUnlimited(userId)) return Infinity;
     const rec = this.store.findOne('credits', (c) => c.userId === userId);
     return rec ? Math.max(0, Math.round(rec.minutes * 100) / 100) : 0;
+  }
+
+  // API/UI 용 표현: 무제한이면 { credits: null, creditsUnlimited: true }
+  summary(userId) {
+    const unlimited = this.isUnlimited(userId);
+    return { credits: unlimited ? null : this.balance(userId), creditsUnlimited: unlimited };
   }
 
   _ensure(userId) {
@@ -47,6 +60,10 @@ export class CreditService {
   }
 
   charge(userId, minutes, reason, meta = {}) {
+    if (this.isUnlimited(userId)) {
+      this.store.insert('creditLedger', { userId, delta: 0, wouldCharge: -minutes, reason: `${reason} (무제한 계정)`, ...meta });
+      return Infinity;
+    }
     const rec = this._ensure(userId);
     if (rec.minutes < minutes) {
       throw new ApiError(402, `이용권이 부족합니다. 필요: ${minutes.toFixed(1)}분, 보유: ${rec.minutes.toFixed(1)}분`, { required: minutes, balance: rec.minutes });

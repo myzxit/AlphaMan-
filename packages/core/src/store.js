@@ -7,7 +7,7 @@ const COLLECTIONS = [
   'users', 'sessions', 'credits', 'creditLedger', 'jobs', 'clips', 'longformJobs',
   'subtitleProjects', 'publishAccounts', 'publishQueue', 'topicReports',
   'inquiries', 'notifications', 'feedback', 'notices', 'referrals', 'teamRequests',
-  'payments', 'pixieThreads', 'uploads', 'settings', 'auditLog',
+  'payments', 'pixieThreads', 'uploads', 'settings', 'auditLog', 'remixJobs', 'voiceProfiles', 'voiceRenders',
 ];
 
 export class Store {

@@ -25,7 +25,7 @@ export function buildApi(app) {
   r.post('/api/auth/password', async (ctx) => ({ ok: app.auth.changePassword(auth(ctx).id, ctx.body) }));
 
   // ---- 이용권 / 요금제 / 결제 / 추천 ----
-  r.get('/api/credits', async (ctx) => ({ balance: app.credits.balance(auth(ctx).id), ledger: app.credits.ledger(ctx.user.id) }));
+  r.get('/api/credits', async (ctx) => ({ ...app.credits.summary(auth(ctx).id), balance: app.credits.summary(ctx.user.id).credits, ledger: app.credits.ledger(ctx.user.id) }));
   r.get('/api/plans', async () => { const info = await app.info(); return { plans: info.plans, addons: info.addonPlans }; });
   r.post('/api/billing/checkout', async (ctx) => app.credits.checkout(auth(ctx).id, ctx.body));
   r.get('/api/billing/payments', async (ctx) => app.credits.payments(auth(ctx).id));
@@ -74,6 +74,48 @@ export function buildApi(app) {
   r.get('/api/longform/jobs', async (ctx) => app.longform.list(auth(ctx).id));
   r.post('/api/longform/jobs', async (ctx) => app.longform.create(auth(ctx).id, ctx.body));
   r.get('/api/longform/jobs/:id', async (ctx) => app.longform.get(auth(ctx).id, ctx.params.id));
+
+  // ---- AI 재구성 (리믹스) ----
+  r.get('/api/remix/defaults', async () => app.remix.defaults());
+  r.get('/api/remix/jobs', async (ctx) => app.remix.list(auth(ctx).id));
+  r.post('/api/remix/jobs', async (ctx) => {
+    const user = auth(ctx);
+    const body = { ...ctx.body };
+    if (body.localPath && app.platform !== 'desktop') delete body.localPath;
+    return app.remix.create(user.id, body);
+  });
+  r.get('/api/remix/jobs/:id', async (ctx) => app.remix.get(auth(ctx).id, ctx.params.id));
+  r.patch('/api/remix/jobs/:id', async (ctx) => app.remix.updateResult(auth(ctx).id, ctx.params.id, ctx.body));
+  r.delete('/api/remix/jobs/:id', async (ctx) => ({ ok: app.remix.remove(auth(ctx).id, ctx.params.id) }));
+  r.post('/api/remix/jobs/:id/regenerate', async (ctx) => app.remix.regenerate(auth(ctx).id, ctx.params.id));
+  r.get('/api/remix/jobs/:id/export', async (ctx) => {
+    const j = app.remix.get(auth(ctx).id, ctx.params.id);
+    if (j.status !== 'done') throw new ApiError(409, '아직 완료되지 않은 작업입니다.');
+    const fmt = ctx.query.format || 'mp4';
+    if (fmt === 'ass') return { _raw: j.result.render.subtitleASS || '', mime: 'text/x-ssa', filename: `${j.id}.ass` };
+    if (fmt === 'json') return { _raw: JSON.stringify(j.result, null, 2), mime: 'application/json', filename: `${j.id}.json` };
+    if (j.result.render?.rendered && fs.existsSync(j.result.render.output)) return { _file: j.result.render.output, mime: 'video/mp4', filename: `${j.id}.mp4` };
+    return { rendered: false, plan: j.result.render?.plan || null, message: 'ffmpeg 이 설치된 환경(프로그램 버전)에서 실제 MP4 가 렌더링됩니다.' };
+  });
+
+  // ---- 내 목소리 TTS ----
+  r.get('/api/voice/profiles', async (ctx) => ({ profiles: app.voice.list(auth(ctx).id), providers: app.voice.providers() }));
+  r.post('/api/voice/profiles', async (ctx) => {
+    const user = auth(ctx);
+    const body = { ...ctx.body };
+    if (body.localPath && app.platform !== 'desktop') delete body.localPath;
+    return app.voice.createProfile(user.id, body);
+  });
+  r.patch('/api/voice/profiles/:id', async (ctx) => app.voice.rename(auth(ctx).id, ctx.params.id, ctx.body.name));
+  r.delete('/api/voice/profiles/:id', async (ctx) => ({ ok: app.voice.remove(auth(ctx).id, ctx.params.id) }));
+  r.post('/api/voice/synthesize', async (ctx) => app.voice.synthesize(auth(ctx).id, ctx.body));
+  r.get('/api/voice/renders', async (ctx) => app.voice.renders(auth(ctx).id));
+  r.get('/api/voice/renders/:id/audio', async (ctx) => {
+    const rec = app.store.get('voiceRenders', ctx.params.id);
+    if (!rec || rec.userId !== auth(ctx).id) throw new ApiError(404, '음성을 찾을 수 없습니다.');
+    if (!rec.audioPath || !fs.existsSync(rec.audioPath)) throw new ApiError(404, '아직 실제 음성 파일이 생성되지 않았습니다 (TTS 제공자 미설정).');
+    return { _file: rec.audioPath, mime: rec.audioPath.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg', filename: path.basename(rec.audioPath) };
+  });
 
   // ---- 자막 편집기 (픽셀링) ----
   r.get('/api/subtitles/fonts', async () => ({ fonts: app.subtitles.fonts(), presets: app.subtitles.presets() }));

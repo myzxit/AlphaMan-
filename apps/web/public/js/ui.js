@@ -35,6 +35,7 @@ export function fmtTime(sec) {
   const m = Math.floor(s / 60); const r = Math.floor(s % 60);
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
 }
+export function creditsLabel(u) { return u && u.creditsUnlimited ? '무제한' : `${u ? u.credits : 0}분`; }
 export function fmtNum(n) { return Number(n || 0).toLocaleString('ko-KR'); }
 export function fmtDate(iso) { if (!iso) return '-'; const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
 export function fmtKRW(n) { return `₩${fmtNum(n)}`; }

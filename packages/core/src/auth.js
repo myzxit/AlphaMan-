@@ -60,15 +60,15 @@ export class AuthService {
       referralCode: 'ADMIN0001',
       status: 'active',
       isSeededAdmin: true,
+      unlimitedCredits: true,
     });
-    this.credits.grant(admin.id, 100000, '관리자 계정 기본 이용권', { by: 'system' });
     return admin;
   }
 
   publicUser(user) {
     if (!user) return null;
     const { passwordHash, ...rest } = user;
-    return { ...rest, isAdmin: user.role === 'admin', credits: this.credits.balance(user.id) };
+    return { ...rest, isAdmin: user.role === 'admin', ...this.credits.summary(user.id) };
   }
 
   signup({ email, password, name, referral, locale = 'ko' }) {

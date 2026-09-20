@@ -16,6 +16,7 @@ export const DEFAULT_OPTIONS = Object.freeze({
   speakerTracking: true,     // 화자 추적 + 다이나믹 줌
   voiceEnhance: true,        // 음성 향상 (잡음/배경음 제거)
   aiHookVoice: false,        // AI 후킹 보이스 (첫 3초 멘트 TTS)
+  voiceProfileId: null,      // 내 목소리 프로필 (없으면 기본 AI 보이스)
   ratio: '9:16',
   language: 'ko',
   targetLanguages: [],       // 다국어 번역 자막/제목
@@ -25,8 +26,8 @@ export const DEFAULT_OPTIONS = Object.freeze({
 const STEPS = ['queued', 'downloading', 'transcribing', 'analyzing', 'editing', 'rendering', 'done'];
 
 export class ShortsEngine {
-  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate;
+  constructor({ store, credits, ai, translate, notifications, uploadsDir, outputDir, voice = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice;
     this.notifications = notifications;
     this.uploadsDir = uploadsDir; this.outputDir = outputDir;
     this.timers = new Map();
@@ -212,9 +213,19 @@ export class ShortsEngine {
       jobId: job.id, userId: job.userId, index, title: highlight.title, reason: highlight.reason, score: highlight.score,
       start: highlight.start, end: highlight.end, durationSec, ratio: opts.ratio, templateId: template.id, genre,
       hook, cuts, zoomKeyframes, subtitles, translations,
-      audio: { voiceEnhance: opts.voiceEnhance ? { denoise: true, removeMusic: true, loudnessLUFS: -14 } : null, aiHookVoice: opts.aiHookVoice && hook ? { text: hook.text, voice: 'ko-female-bright', durationSec: 3 } : null },
+      audio: { voiceEnhance: opts.voiceEnhance ? { denoise: true, removeMusic: true, loudnessLUFS: -14 } : null, aiHookVoice: opts.aiHookVoice && hook ? await this._hookVoice(job, hook, index) : null },
       status: 'edited', render: null, thumbnail: job.source.thumbnail, sourceTitle: job.source.title,
     });
+  }
+
+  // AI 후킹 보이스: 내 목소리 프로필이 있으면 그 목소리로, 없으면 기본 AI 보이스
+  async _hookVoice(job, hook, index) {
+    const base = { text: hook.text, durationSec: 3 };
+    if (job.options.voiceProfileId && this.voice) {
+      try { const r = await this.voice.synthesize(job.userId, { profileId: job.options.voiceProfileId, text: hook.text, style: 'hook', outputName: `hook-${job.id.slice(0, 8)}-${index + 1}` }); return { ...base, voice: 'my-voice', voiceProfileId: job.options.voiceProfileId, audioPath: r.audioPath, engine: r.engine }; }
+      catch (err) { console.warn('[shorts] 내 목소리 합성 실패, 기본 보이스 사용:', err.message); }
+    }
+    return { ...base, voice: 'ko-female-bright', engine: 'default' };
   }
 
   // 5) 렌더링: ffmpeg 이 있으면 실제 파일 생성, 없으면 렌더 계획 저장
