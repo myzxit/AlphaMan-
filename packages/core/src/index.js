@@ -81,8 +81,16 @@ export class AlphaMan {
     };
   }
 
-  registerUpload(userId, { filename, mimeType, size, path: filePath }) {
-    return this.store.insert('uploads', { userId, filename, mimeType, size, path: filePath });
+  registerUpload(userId, { filename, mimeType, size, path: filePath, remoteUrl = null }) {
+    return this.store.insert('uploads', { userId, filename, mimeType, size, path: filePath, remoteUrl });
+  }
+
+  // 시스템 진단 (관리자): 원격 저장소·파일 보관·무료 TTS 엔진·외부 도구 상태
+  async diagnostics() {
+    const out = { platform: this.platform, serverless: Boolean(process.env.VERCEL), remoteStore: this.store.remote ? this.store.remote.kind : null, tools: toolAvailability(), voiceProviders: this.voice.providers(), dataDir: this.dataDir, checks: {} };
+    if (this.store.remote?.putFile) { try { const url = await this.store.remote.putFile('diag/ping.txt', Buffer.from(`ping ${Date.now()}`), 'text/plain'); out.checks.remoteFile = { ok: true, url }; } catch (err) { out.checks.remoteFile = { ok: false, error: err.message }; } }
+    try { out.checks.freeTts = await this.voice.detectFreeEngines(); } catch (err) { out.checks.freeTts = { error: err.message }; }
+    return out;
   }
 
   close() {

@@ -254,6 +254,7 @@ export function buildApi(app) {
 
   // ---- 관리자 ----
   r.get('/api/admin/stats', async (ctx) => { admin(ctx); return app.admin.stats(); });
+  r.get('/api/admin/diag', async (ctx) => { admin(ctx); return app.diagnostics(); });
   r.get('/api/admin/users', async (ctx) => { admin(ctx); return app.admin.users(ctx.query); });
   r.get('/api/admin/users/:id', async (ctx) => { admin(ctx); return app.admin.user(ctx.params.id); });
   r.patch('/api/admin/users/:id', async (ctx) => app.admin.updateUser(admin(ctx), ctx.params.id, ctx.body));
