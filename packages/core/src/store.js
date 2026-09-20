@@ -11,12 +11,32 @@ const COLLECTIONS = [
 ];
 
 export class Store {
-  constructor(filePath) {
+  constructor(filePath, { remote = null } = {}) {
     this.filePath = filePath;
     this.data = Object.fromEntries(COLLECTIONS.map((c) => [c, []]));
     this._dirty = false;
     this._timer = null;
+    this.remote = remote; // { load(): Promise<object|null>, save(json): Promise<void> } - 서버리스 인스턴스 간 공유 저장소
+    this._lastRemoteLoad = 0;
     this.load();
+    this.ready = remote ? this.loadRemote() : Promise.resolve();
+  }
+
+  // 원격(Vercel Blob 등) 스냅샷을 불러와 로컬 데이터를 대체한다
+  async loadRemote() {
+    if (!this.remote) return false;
+    try {
+      const raw = await this.remote.load();
+      if (raw) for (const c of COLLECTIONS) this.data[c] = Array.isArray(raw[c]) ? raw[c] : [];
+      this._lastRemoteLoad = Date.now();
+      return Boolean(raw);
+    } catch (err) { console.warn('[store] 원격 저장소 읽기 실패:', err.message); return false; }
+  }
+
+  // 요청 시작 시 호출: 변경 중이 아니고 일정 시간이 지났으면 원격 최신본을 다시 읽는다
+  async refreshIfStale(maxAgeMs = 2000) {
+    if (!this.remote || this._dirty) return;
+    if (Date.now() - this._lastRemoteLoad > maxAgeMs) await this.loadRemote();
   }
 
   static memory() {
@@ -38,17 +58,28 @@ export class Store {
   }
 
   save() {
-    if (!this.filePath) return;
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const tmp = `${this.filePath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data));
-    fs.renameSync(tmp, this.filePath);
+    if (this.filePath) {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      const tmp = `${this.filePath}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.data));
+      fs.renameSync(tmp, this.filePath);
+    }
     this._dirty = false;
+    if (this.remote) {
+      const json = JSON.stringify(this.data);
+      this._remoteSaving = (this._remoteSaving || Promise.resolve()).then(() => this.remote.save(json)).then(() => { this._lastRemoteLoad = Date.now(); }).catch((err) => console.warn('[store] 원격 저장소 쓰기 실패:', err.message));
+    }
+  }
+
+  // 서버리스 응답 전에 원격 저장이 끝나길 기다린다
+  async flushAsync() {
+    this.flush();
+    if (this._remoteSaving) await this._remoteSaving;
   }
 
   touch() {
     this._dirty = true;
-    if (!this.filePath) return;
+    if (!this.filePath && !this.remote) return;
     if (this._timer) return;
     this._timer = setTimeout(() => {
       this._timer = null;
@@ -121,3 +152,34 @@ export class Store {
 }
 
 export { COLLECTIONS };
+
+// Vercel Blob 을 원격 저장소로 사용 (BLOB_READ_WRITE_TOKEN 이 있을 때). 외부 SDK 없이 REST 호출만 사용한다.
+export function vercelBlobRemote({ token = process.env.BLOB_READ_WRITE_TOKEN, pathname = 'alphaman/alphaman.json' } = {}) {
+  if (!token) return null;
+  const API = 'https://blob.vercel-storage.com';
+  const headers = { authorization: `Bearer ${token}`, 'x-api-version': '7' };
+  let url = null;
+  return {
+    kind: 'vercel-blob',
+    async load() {
+      if (!url) {
+        const list = await fetch(`${API}/?prefix=${encodeURIComponent(pathname)}&limit=1`, { headers, signal: AbortSignal.timeout(8000) });
+        if (!list.ok) throw new Error(`blob list ${list.status}`);
+        const j = await list.json();
+        const hit = (j.blobs || []).find((b) => b.pathname === pathname);
+        if (!hit) return null;
+        url = hit.url;
+      }
+      const res = await fetch(url, { headers, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      if (res.status === 404) { url = null; return null; }
+      if (!res.ok) throw new Error(`blob get ${res.status}`);
+      return res.json();
+    },
+    async save(json) {
+      const res = await fetch(`${API}/${pathname}`, { method: 'PUT', headers: { ...headers, 'x-content-type': 'application/json', 'x-add-random-suffix': '0', 'x-allow-overwrite': '1', 'x-cache-control-max-age': '0' }, body: json, signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`blob put ${res.status}`);
+      const j = await res.json();
+      if (j.url) url = j.url;
+    },
+  };
+}

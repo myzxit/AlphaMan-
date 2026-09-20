@@ -5,7 +5,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { ApiError } from './errors.js';
-import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run } from './media.js';
+import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run } from './media.js';
 import { transcribe, semanticSplit } from './subtitles/stt.js';
 import { toASS } from './subtitles/format.js';
 import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
@@ -64,10 +64,14 @@ export class RemixEngine {
       validateVideoMeta({ filename: path.basename(localPath), ...meta });
       source = { type: 'local', path: localPath, title: path.parse(localPath).name, durationSec: meta.durationSec, width: meta.width, height: meta.height };
     } else if (url) {
-      const yt = parseYoutubeUrl(url);
-      const meta = await fetchYoutubeMeta(yt.id);
-      source = { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec: meta.durationSec || Number(options.estimatedDurationSec) || 600 };
-    } else throw new ApiError(400, '영상 링크 또는 파일 중 하나를 올려주세요.');
+      // 롱폼 링크든 쇼츠 링크든(YouTube / YouTube Shorts / TikTok / Instagram Reels) 하나만 넣으면 된다
+      const parsed = parseVideoUrl(url);
+      const isShorts = /\/shorts\//.test(String(url)) || parsed.platform !== 'youtube';
+      let meta = { title: `${parsed.platform} 영상 ${parsed.id}`, channel: null, thumbnail: null, durationSec: null };
+      if (parsed.platform === 'youtube') meta = await fetchYoutubeMeta(parsed.id);
+      const est = Number(options.estimatedDurationSec);
+      source = { type: parsed.platform, url: parsed.url, videoId: parsed.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, isShorts, durationSec: meta.durationSec || (est > 0 ? est : (isShorts ? 45 : 600)), notice: parsed.notice || null };
+    } else throw new ApiError(400, '영상 링크(롱폼/쇼츠) 또는 파일 중 하나를 올려주세요.');
 
     let reference = null;
     if (referenceUrl) {
@@ -176,14 +180,14 @@ export class RemixEngine {
     return { steps, engine: steps.some((s) => s.method !== 'plan') ? 'ffmpeg' : 'plan' };
   }
 
-  // 구조 재배열 + 길이 맞추기: 목표 길이 안에 들어가도록 세그먼트를 고르고, 후킹→본문→마무리 순서로 재배치
+  // 구조 재배열 + 길이 맞추기: 원본이 길면 목표 길이만큼 구간을 골라 줄이고, 원본이 짧으면(쇼츠 등) 목표 길이까지 늘린다.
   async planStructure({ segments, source, opts, genre, styleProfile }) {
     const targetSec = Number(opts.targetMinutes) * 60;
     const pacing = opts.pacing === 'auto' ? (styleProfile?.pacing || 'normal') : opts.pacing;
     const heuristic = () => {
       const KEY = /핵심|비밀|놀라|반전|절반|실수|중요|결과|꼭|처음|마지막|사실|진짜|충격|방법|이유/;
       const scored = segments.map((s, i) => ({ s, i, score: 50 + (KEY.test(s.text) ? 30 : 0) + Math.min(15, s.text.length / 4) + (i < 3 ? 10 : 0) + (i > segments.length - 4 ? 8 : 0) }));
-      if (source.durationSec <= targetSec) return { keep: segments.map((s) => ({ start: s.start, end: s.end, reason: '원본 길이가 목표 이하 - 전체 유지' })), hook: segments[0]?.text || source.title };
+      if (source.durationSec <= targetSec) return { keep: [{ start: 0, end: source.durationSec, reason: '원본 길이가 목표 이하 - 전체 유지 후 확장' }], hook: segments[0]?.text || source.title };
       const sorted = [...scored].sort((a, b) => b.score - a.score);
       const keep = []; let total = 0;
       for (const c of sorted) { const len = c.s.end - c.s.start; if (total + len > targetSec) continue; keep.push({ start: c.s.start, end: c.s.end, reason: `점수 ${Math.round(c.score)}`, i: c.i }); total += len; if (total >= targetSec * 0.97) break; }
@@ -193,43 +197,47 @@ export class RemixEngine {
     };
     const transcript = segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`).join('\n');
     const res = await this.ai.complete({
-      system: '유튜브 롱폼 재구성 편집자입니다. 원본 대본에서 목표 길이에 맞게 남길 구간을 고르고 후킹→본문→마무리 구조로 재배열한 계획을 JSON 으로만 답합니다.',
+      system: '유튜브 영상 재구성 편집자입니다. 원본 대본에서 목표 길이에 맞게 남길 구간을 고르고 후킹→본문→마무리 구조로 재배열한 계획을 JSON 으로만 답합니다. 원본이 목표보다 짧으면 전체를 남기세요.',
       prompt: `제목: ${source.title}\n장르: ${genre}\n목표 길이: ${targetSec}초 (원본 ${source.durationSec}초)\n호흡: ${pacing}${styleProfile ? `\n참고 스타일: ${JSON.stringify({ structure: styleProfile.structure, tone: styleProfile.tone, hookType: styleProfile.hookType })}` : ''}\n\n대본:\n${transcript}\n\n형식: {"hook":"첫 10초 후킹 멘트","keep":[{"start":초,"end":초,"reason":"선정 이유"}],"outline":["섹션 제목"],"title":"새 제목","description":"설명 2문장"}`,
       json: true, maxTokens: 12000, fallback: heuristic,
     });
     const base = res && Array.isArray(res.keep) && res.keep.length ? res : heuristic();
     let keep = base.keep.map((k) => ({ start: clamp(Number(k.start) || 0, 0, source.durationSec), end: clamp(Number(k.end) || 0, 0, source.durationSec), reason: k.reason || '' })).filter((k) => k.end - k.start >= 1).sort((a, b) => a.start - b.start);
     keep = mergeAdjacent(keep);
-    // 목표 길이 초과분은 뒤에서부터 잘라내고, 부족하면 원본 순서대로 채운다 (1~28분 보장)
+    if (!keep.length) keep = [{ start: 0, end: source.durationSec, reason: '전체 유지' }];
+    const speedFactor = pacing === 'fast' ? 1.08 : pacing === 'slow' ? 0.97 : 1;
+    // 1) 원본이 길면: 목표 초과분은 뒤에서부터 잘라내고, 부족하면 원본 순서대로 채운다
     let total = keep.reduce((s, k) => s + (k.end - k.start), 0);
-    while (total > targetSec * 1.05 && keep.length > 1) { const last = keep.pop(); total -= last.end - last.start; }
-    if (total > targetSec * 1.05 && keep.length === 1) { keep[0].end = keep[0].start + targetSec; total = targetSec; }
+    while (total / speedFactor > targetSec * 1.05 && keep.length > 1) { const last = keep.pop(); total -= last.end - last.start; }
+    if (total / speedFactor > targetSec * 1.05 && keep.length === 1) { keep[0].end = keep[0].start + targetSec * speedFactor; total = keep[0].end - keep[0].start; }
     if (total < Math.min(targetSec, source.durationSec) * 0.9) {
-      for (const s of segments) { if (total >= targetSec * 0.97) break; if (keep.some((k) => s.start < k.end && s.end > k.start)) continue; keep.push({ start: s.start, end: s.end, reason: '길이 보충' }); total += s.end - s.start; }
+      for (const sg of segments) { if (total >= targetSec * 0.97) break; if (keep.some((k) => sg.start < k.end && sg.end > k.start)) continue; keep.push({ start: sg.start, end: sg.end, reason: '길이 보충' }); total += sg.end - sg.start; }
       keep.sort((a, b) => a.start - b.start); keep = mergeAdjacent(keep); total = keep.reduce((s, k) => s + (k.end - k.start), 0);
     }
-    const minSec = REMIX_LIMITS.minMinutes * 60;
-    if (total < minSec && source.durationSec >= minSec) { keep = [{ start: 0, end: Math.min(source.durationSec, targetSec), reason: '최소 길이 보장' }]; total = keep[0].end; }
     const outline = base.outline?.length ? base.outline : (styleProfile?.structure || ['후킹', '본문', '마무리']);
-    const speedFactor = pacing === 'fast' ? 1.08 : pacing === 'slow' ? 0.97 : 1;
-    return { hook: String(base.hook || source.title).slice(0, 120), keep, outline, title: String(base.title || `${source.title} (재구성)`).slice(0, 100), description: String(base.description || '').slice(0, 500), pacing, speedFactor, finalDurationSec: Math.round(total / speedFactor), reorder: opts.reorder, engine: this.ai.lastMode };
+    // 2) 타임라인 구성: 원본이 짧으면(쇼츠 등) 카드·리플레이·슬로모션·요약으로 목표 길이까지 확장
+    const timeline = composeTimeline({ keep, segments, targetSec, speedFactor, outline, hook: String(base.hook || source.title), source });
+    const finalDurationSec = round(timeline.reduce((s, t) => s + (t.newEnd - t.newStart), 0));
+    const sourceUsedSec = round(keep.reduce((s, k) => s + (k.end - k.start), 0));
+    return { hook: String(base.hook || source.title).slice(0, 120), keep, timeline, outline, title: String(base.title || `${source.title} (재구성)`).slice(0, 100), description: String(base.description || '').slice(0, 500), pacing, speedFactor, finalDurationSec, targetSec, sourceUsedSec, extended: finalDurationSec > sourceUsedSec + 1, stretchFactor: round(finalDurationSec / Math.max(1, source.durationSec)), reorder: opts.reorder, engine: this.ai.lastMode };
   }
 
   // 새 자막·효과음·배경음·전환·내레이션
   async rebuild({ job, plan, segments, genre, styleProfile }) {
     const opts = job.options;
     const template = opts.template === 'auto' ? (TEMPLATES.find((t) => t.id === styleProfile?.subtitleStyle) || templateFor(genre)) : (TEMPLATES.find((t) => t.id === opts.template) || templateFor(genre));
-    // 새 타임라인에서의 위치 계산
-    let cursor = 0; const timeline = [];
-    for (const k of plan.keep) { timeline.push({ ...k, newStart: round(cursor), newEnd: round(cursor + (k.end - k.start)) }); cursor += k.end - k.start; }
+    const timeline = plan.timeline;
+    const mapT = (t, x) => round((x - t.start) / (t.speed || 1) + t.newStart);
 
     let subtitles = [];
     if (opts.newSubtitles) {
       for (const t of timeline) {
+        if (t.kind === 'card') { subtitles.push({ start: t.newStart, end: t.newEnd, text: t.title, words: [], animation: 'pop', card: true }); continue; }
+        if (!['source', 'replay', 'slowmo'].includes(t.kind)) continue;
         const segs = segments.filter((s) => s.end > t.start && s.start < t.end).map((s) => ({ ...s, start: Math.max(s.start, t.start), end: Math.min(s.end, t.end) }));
-        for (const s of semanticSplit(segs)) subtitles.push({ ...s, start: round(s.start - t.start + t.newStart), end: round(s.end - t.start + t.newStart), words: s.words.map((w) => ({ ...w, start: round(w.start - t.start + t.newStart), end: round(w.end - t.start + t.newStart) })), animation: template.animation });
+        for (const s of semanticSplit(segs)) subtitles.push({ ...s, start: mapT(t, s.start), end: mapT(t, s.end), words: s.words.map((w) => ({ ...w, start: mapT(t, w.start), end: mapT(t, w.end) })), animation: t.kind === 'source' ? template.animation : 'karaoke' });
       }
-      subtitles = subtitles.map((s, i) => ({ ...s, id: `seg-${i + 1}` }));
+      subtitles = subtitles.sort((a, b) => a.start - b.start).map((s, i) => ({ ...s, id: `seg-${i + 1}` }));
     }
 
     const sfx = [];
@@ -255,7 +263,7 @@ export class RemixEngine {
       narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId, lines: renders, replacesOriginalVoice: opts.narration === 'full' && !opts.keepOriginalVoice };
     }
 
-    return { timeline, template: { id: template.id, name: template.name, font: template.font }, subtitles, sfx, bgm, transitions, colorGrade, narration, ratio: opts.ratio };
+    return { timeline, template: { id: template.id, name: template.name, font: template.font }, subtitles, sfx, bgm, transitions, colorGrade, narration, ratio: opts.ratio, extended: plan.extended, stretchFactor: plan.stretchFactor };
   }
 
   async writeNarration({ plan, subtitles, mode, tone }) {
@@ -274,24 +282,36 @@ export class RemixEngine {
     return lines.sort((a, b) => a.at - b.at);
   }
 
-  // ffmpeg 이 있고 로컬 파일이면 실제 렌더링(구간 이어붙이기 + 배속 + 자막), 아니면 렌더 계획을 남긴다
+  // ffmpeg 이 있고 로컬 파일이면 실제 렌더링(타임라인 항목을 trim/배속/카드로 이어붙이고 자막 입힘), 아니면 렌더 계획을 남긴다
   async render({ job, plan, rebuild, cleaning }) {
-    const ass = toASS(rebuild.subtitles, { font: rebuild.template.font, size: 56, playResX: rebuild.ratio === '9:16' ? 1080 : 1920, playResY: rebuild.ratio === '9:16' ? 1920 : 1080 });
+    const dims = rebuild.ratio === '9:16' ? [1080, 1920] : rebuild.ratio === '1:1' ? [1080, 1080] : [1920, 1080];
+    const [w, h] = dims;
+    const ass = toASS(rebuild.subtitles.filter((s) => !s.card), { font: rebuild.template.font, size: 56, playResX: w, playResY: h });
     const dir = path.join(this.outputDir, job.userId, 'remix');
     const out = path.join(dir, `${job.id}.mp4`);
     const assPath = path.join(dir, `${job.id}.ass`);
-    const dims = rebuild.ratio === '9:16' ? '1080:1920' : rebuild.ratio === '1:1' ? '1080:1080' : '1920:1080';
-    const [w, h] = dims.split(':');
-    const cropFilter = cleaning.steps.find((s) => s.id === 'burned-subtitles') ? `,crop=iw:ih*0.78:0:0` : '';
-    const select = plan.keep.map((k) => `between(t,${k.start},${k.end})`).join('+');
-    const vf = `select='${select}',setpts=N/FRAME_RATE/TB${cropFilter},scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setpts=PTS/${plan.speedFactor},subtitles='${assPath.replace(/'/g, "\\'")}'`;
-    const af = `aselect='${select}',asetpts=N/SR/TB,atempo=${Math.min(2, Math.max(0.5, plan.speedFactor))},loudnorm=I=-14`;
-    const args = ['-y', '-i', job.source.path || 'INPUT.mp4', '-vf', vf, '-af', af, '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', out];
+    const crop = cleaning.steps.find((s) => s.id === 'burned-subtitles') ? 'crop=iw:ih*0.78:0:0,' : '';
+    const fit = `${crop}scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
+    const parts = []; const labels = [];
+    rebuild.timeline.forEach((t, i) => {
+      const dur = round(t.newEnd - t.newStart);
+      if (t.kind === 'card') {
+        const text = String(t.title || '').replace(/[\\':]/g, ' ');
+        parts.push(`color=c=0x14161c:s=${w}x${h}:d=${dur}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(h / 14)}:x=(w-text_w)/2:y=(h-text_h)/2[v${i}]`, `anullsrc=r=48000:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${i}]`);
+      } else {
+        const speed = t.speed || 1;
+        parts.push(`[0:v]trim=${t.start}:${t.end},setpts=(PTS-STARTPTS)/${speed},${fit}[v${i}]`, `[0:a]atrim=${t.start}:${t.end},asetpts=PTS-STARTPTS,atempo=${Math.min(2, Math.max(0.5, speed))}[a${i}]`);
+      }
+      labels.push(`[v${i}][a${i}]`);
+    });
+    const n = rebuild.timeline.length;
+    const filter = `${parts.join(';')};${labels.join('')}concat=n=${n}:v=1:a=1[vc][ac];[vc]subtitles='${assPath.replace(/'/g, "\\'")}'[vo];[ac]loudnorm=I=-14[ao]`;
+    const args = ['-y', '-i', job.source.path || 'INPUT.mp4', '-filter_complex', filter, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', out];
     if (job.source.path && which('ffmpeg')) {
       try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(assPath, ass); await run('ffmpeg', args); return { rendered: true, output: out, subtitleFile: assPath, args }; }
       catch (err) { return { rendered: false, error: err.message, plan: { bin: 'ffmpeg', args }, subtitleASS: ass }; }
     }
-    return { rendered: false, plan: { bin: 'ffmpeg', args, note: job.source.path ? 'ffmpeg 을 설치하면 실제 MP4 가 렌더링됩니다.' : '유튜브 원본은 yt-dlp 로 내려받은 뒤 ffmpeg 으로 렌더링됩니다.' }, subtitleASS: ass };
+    return { rendered: false, plan: { bin: 'ffmpeg', args, items: n, note: job.source.path ? 'ffmpeg 을 설치하면 실제 MP4 가 렌더링됩니다.' : '링크 원본은 yt-dlp 로 내려받은 뒤 ffmpeg 으로 렌더링됩니다.' }, subtitleASS: ass };
   }
 
   // ---- 조회/편집/삭제 ----
@@ -323,6 +343,37 @@ export class RemixEngine {
 }
 
 function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
+
+// 유지 구간(keep)을 새 타임라인으로 배치하고, 목표 길이에 못 미치면 카드·리플레이·슬로모션으로 확장한다.
+// 항목 kind: source(원본 구간) | replay(하이라이트 다시 보기) | slowmo(슬로모션 리플레이) | card(챕터/타이틀 카드)
+export function composeTimeline({ keep, segments, targetSec, speedFactor = 1, outline = [], hook = '', source }) {
+  const items = []; let cursor = 0;
+  const push = (item) => { const dur = item.kind === 'card' ? item.dur : (item.end - item.start) / (item.speed || 1); items.push({ ...item, newStart: round(cursor), newEnd: round(cursor + dur) }); cursor += dur; };
+  const total = () => cursor;
+  keep.forEach((k, i) => { if (i === 0) push({ kind: 'card', title: hook || source.title, dur: 3 }); push({ kind: 'source', start: k.start, end: k.end, speed: speedFactor, reason: k.reason }); });
+  if (total() >= targetSec * 0.95) return items;
+  // 확장 1: 하이라이트 문장 리플레이 (키워드 문장 우선)
+  const KEY = /핵심|비밀|놀라|반전|중요|결과|진짜|충격|방법|이유|\?|!/;
+  const highlights = segments.filter((s) => s.end - s.start >= 1.5).sort((a, b) => (KEY.test(b.text) ? 1 : 0) - (KEY.test(a.text) ? 1 : 0) || b.text.length - a.text.length);
+  const chapters = outline.length ? outline : ['핵심 정리'];
+  let round_ = 0;
+  while (total() < targetSec * 0.97 && round_ < 400) {
+    const ch = chapters[round_ % chapters.length];
+    const hl = highlights[round_ % Math.max(1, highlights.length)];
+    if (!hl) { push({ kind: 'card', title: ch, dur: Math.min(5, targetSec - total()) }); round_ += 1; continue; }
+    push({ kind: 'card', title: `${ch} ${Math.floor(round_ / chapters.length) + 1}`, dur: 3 });
+    if (total() >= targetSec) break;
+    push({ kind: 'replay', start: hl.start, end: hl.end, speed: 1, reason: '하이라이트 다시 보기' });
+    if (total() >= targetSec) break;
+    if (round_ % 2 === 0) push({ kind: 'slowmo', start: hl.start, end: hl.end, speed: 0.5, reason: '슬로모션 리플레이' });
+    round_ += 1;
+  }
+  // 초과분 정리: 마지막 항목을 목표에 맞춰 자른다
+  const last = items[items.length - 1];
+  if (last && cursor > targetSec) { const over = cursor - targetSec; if (last.kind === 'card') last.dur = Math.max(1, last.dur - over); else last.end = Math.max(last.start + 1, last.end - over * (last.speed || 1)); last.newEnd = round(Math.max(last.newStart + 1, last.newEnd - over)); }
+  push({ kind: 'card', title: '끝까지 봐주셔서 감사합니다', dur: 3 });
+  return items;
+}
 function round(n) { return Math.round(n * 100) / 100; }
 function mergeAdjacent(keep) {
   const out = [];

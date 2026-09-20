@@ -32,7 +32,7 @@ function matchRoute(path) {
 }
 
 export async function refreshUser() {
-  try { const r = await get('/api/auth/me'); state.user = r.user; } catch { state.user = null; }
+  try { const r = await get('/api/auth/me'); state.user = r.user; if (!r.user && getToken()) setToken(null); } catch (err) { state.user = null; if (err.status === 401) setToken(null); }
   renderUserMenu(); renderSidebar();
   if (state.user) refreshNotifications();
 }

@@ -11,6 +11,9 @@ const handler = createRequestHandler(app, { webDir });
 
 export const config = { api: { bodyParser: false } };
 
-export default function vercelHandler(req, res) {
-  return handler(req, res);
+export default async function vercelHandler(req, res) {
+  await app.ready;
+  if (req.url && req.url.startsWith('/api/')) await app.store.refreshIfStale();
+  await handler(req, res);
+  await app.store.flushAsync();
 }

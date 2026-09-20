@@ -220,7 +220,7 @@ test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타�
   a.credits.grant(user.id, 200, 'test');
   await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: false }), /권리/);
   await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 40 } }), /1~28분/);
-  await assert.rejects(() => a.remix.create(user.id, { rightsConfirmed: true }), /링크 또는 파일/);
+  await assert.rejects(() => a.remix.create(user.id, { rightsConfirmed: true }), /또는 파일 중 하나/);
   const job = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', referenceUrl: 'https://www.youtube.com/watch?v=zyxwvutsrqp', rightsConfirmed: true, options: { targetMinutes: 3, estimatedDurationSec: 20 * 60 } });
   assert.equal(job.minutesCharged, 20);
   assert.equal(a.credits.balance(user.id), 210);
@@ -244,10 +244,20 @@ test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타�
   await a.remix.regenerate(user.id, job.id);
   assert.equal(a.credits.balance(user.id), 200);
   await waitFor(() => a.store.get('remixJobs', job.id).status === 'done', 8000);
-  // 원본이 목표보다 짧으면 전체 유지
-  const short = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 10, estimatedDurationSec: 90 } });
+  // 쇼츠 링크(짧은 원본)는 카드·리플레이·슬로모션으로 목표 길이까지 확장된다
+  const short = await a.remix.create(user.id, { url: 'https://www.youtube.com/shorts/zyxwvutsrqp', rightsConfirmed: true, options: { targetMinutes: 10, estimatedDurationSec: 45 } });
+  assert.equal(short.source.isShorts, true);
   const sdone = await waitFor(() => { const j = a.store.get('remixJobs', short.id); return j.status === 'done' ? j : null; }, 8000);
-  assert.ok(sdone.result.finalDurationSec <= 90);
+  assert.ok(Math.abs(sdone.result.finalDurationSec - 600) <= 30, `목표 10분 근처여야 함: ${sdone.result.finalDurationSec}`);
+  assert.equal(sdone.result.extended, true);
+  const kinds = new Set(sdone.result.timeline.map((t) => t.kind));
+  assert.ok(kinds.has('source') && kinds.has('replay') && kinds.has('card'));
+  assert.ok(sdone.result.subtitles.length > 10);
+  assert.match(sdone.result.render.plan.args.join(' '), /concat=n=/);
+  // TikTok / Reels 링크도 허용
+  const tk = await a.remix.create(user.id, { url: 'https://www.tiktok.com/@user/video/7300000000000000000', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 30 } });
+  assert.equal(tk.source.type, 'tiktok');
+  await waitFor(() => a.store.get('remixJobs', tk.id).status === 'done', 8000);
   a.close();
 });
 

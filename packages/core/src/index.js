@@ -1,7 +1,7 @@
 // AlphaMan 코어 파사드: 웹 서버와 데스크톱 앱이 동일하게 사용하는 진입점
 import path from 'node:path';
 import fs from 'node:fs';
-import { Store } from './store.js';
+import { Store, vercelBlobRemote } from './store.js';
 import { AuthService, ADMIN_ACCOUNT } from './auth.js';
 import { CreditService, PLANS, ADDON_PLANS } from './credits.js';
 import { AIService } from './ai.js';
@@ -31,7 +31,9 @@ export class AlphaMan {
     this.uploadsDir = path.join(this.dataDir, 'uploads');
     this.outputDir = path.join(this.dataDir, 'output');
     if (!memory) for (const d of [this.dataDir, this.uploadsDir, this.outputDir]) fs.mkdirSync(d, { recursive: true });
-    this.store = memory ? Store.memory() : new Store(path.join(this.dataDir, 'alphaman.json'));
+    const remote = !memory && process.env.ALPHAMAN_STORE_MODE !== 'local' ? vercelBlobRemote() : null;
+    this.store = memory ? Store.memory() : new Store(path.join(this.dataDir, 'alphaman.json'), { remote });
+    this.ready = this.store.ready.then(() => { this.auth.seedAdmin(); });
 
     this.credits = new CreditService(this.store);
     this.auth = new AuthService(this.store, this.credits);
@@ -77,6 +79,7 @@ export class AlphaMan {
 }
 
 export { ADMIN_ACCOUNT, PLANS, ADDON_PLANS, PLATFORMS, LOCALES, CONTENT };
+export { ADMIN_USER_ID, verifySessionToken } from './auth.js';
 export { ApiError } from './errors.js';
 export { validateVideoMeta, parseYoutubeUrl, parseVideoUrl } from './media.js';
 export { TEMPLATES, GENRES, RATIOS } from './shorts/templates.js';
