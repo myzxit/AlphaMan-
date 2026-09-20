@@ -115,10 +115,28 @@ export class AuthService {
 
   login({ email, password }) {
     email = normalizeEmail(email);
-    const user = this.store.findOne('users', (u) => u.email === email);
-    if (!user || !verifyPassword(password, user.passwordHash)) throw new ApiError(401, '이메일 또는 비밀번호가 올바르지 않습니다.');
+    // 같은 이메일 레코드가 여러 개(서버 인스턴스 병합 전 중복 가입)여도 비밀번호가 맞는 레코드로 로그인한다
+    const candidates = this.store.find('users', (u) => u.email === email);
+    if (!candidates.length) throw new ApiError(401, '가입된 이메일이 아닙니다. 이메일을 확인하거나 무료로 가입해주세요. (저장소 전환 이전에 만든 계정은 남아 있지 않을 수 있습니다)');
+    const user = candidates.find((u) => u.passwordHash && verifyPassword(password, u.passwordHash));
+    if (!user) {
+      const social = candidates.find((u) => !u.passwordHash && u.provider && u.provider !== 'password');
+      if (social) throw new ApiError(401, `이 이메일은 ${social.provider} 간편 로그인으로 가입된 계정입니다. 같은 방법으로 로그인해주세요.`);
+      throw new ApiError(401, '비밀번호가 올바르지 않습니다. 비밀번호를 잊으셨다면 로그인 화면의 "비밀번호 재설정 요청"을 이용하세요.');
+    }
     if (user.status === 'banned') throw new ApiError(403, '이용이 제한된 계정입니다. 관리자에게 문의하세요.');
     return this.createSession(user);
+  }
+
+  // 비밀번호 재설정 요청 (이메일 발송 없이 운영): 관리자에게 문의로 전달되고, 관리자가 초기화한다
+  requestPasswordReset({ email, support }) {
+    email = normalizeEmail(email);
+    if (!isValidEmail(email)) throw new ApiError(400, '올바른 이메일을 입력해주세요.');
+    const user = this.store.findOne('users', (u) => u.email === email);
+    if (!user) throw new ApiError(404, '가입된 이메일이 아닙니다.');
+    if (support) support.createInquiry({ user, email, category: 'account', message: `[비밀번호 재설정 요청] ${email} 계정의 비밀번호 초기화를 요청했습니다.` });
+    this.store.insert('auditLog', { userId: user.id, action: 'auth.password.reset-request' });
+    return { ok: true, message: '관리자에게 재설정 요청을 전달했습니다. 확인 후 임시 비밀번호를 문의 답변(픽시 채팅·알림)으로 알려드립니다.' };
   }
 
   // Google 간편 로그인: 클라이언트가 확인한 프로필(email, name, sub)을 받아 계정을 만들거나 연결한다.
@@ -174,7 +192,14 @@ export class AuthService {
 
   updateProfile(userId, patch) {
     const allowed = ['name', 'locale', 'theme', 'channelUrl', 'phone', 'marketingOptIn'];
-    const safe = Object.fromEntries(Object.entries(patch).filter(([k]) => allowed.includes(k)));
+    const safe = Object.fromEntries(Object.entries(patch).filter(([k]) => allowed.includes(k)).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 200) : v]));
+    if (patch.prefs && typeof patch.prefs === 'object') {
+      const user = this.store.get('users', userId);
+      const PREF_KEYS = ['autosave', 'notifications', 'notifyEmail', 'defaultRatio', 'defaultSubtitlePreset', 'quality', 'shortcuts', 'privacyAnalytics', 'shareDefaultDays', 'language', 'reduceMotion', 'mobileEditor'];
+      const prefs = { ...(user?.prefs || {}) };
+      for (const k of PREF_KEYS) if (patch.prefs[k] !== undefined) prefs[k] = typeof patch.prefs[k] === 'string' ? patch.prefs[k].slice(0, 100) : patch.prefs[k];
+      safe.prefs = prefs;
+    }
     return this.publicUser(this.store.update('users', userId, safe));
   }
 

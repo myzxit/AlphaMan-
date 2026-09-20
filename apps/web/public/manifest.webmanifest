@@ -1,10 +1,26 @@
 {
-  "name": "AlphaMan",
+  "name": "AlphaMan - AI 쇼츠 · 자막 편집기",
   "short_name": "AlphaMan",
-  "description": "AI 하이라이트 쇼츠 자동 제작 · AI 자막 편집기 · 디스커버리",
-  "start_url": "/",
+  "description": "AI 하이라이트 쇼츠 자동 제작 · AI 자막 편집기 · AI 재구성 · 디스커버리",
+  "id": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
   "background_color": "#0f1115",
   "theme_color": "#6c5ce7",
-  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+  "lang": "ko",
+  "categories": ["productivity", "video", "utilities"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "쇼츠 만들기", "url": "/#/studio", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "보관함", "url": "/#/library", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "작업 센터", "url": "/#/jobs", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
 }

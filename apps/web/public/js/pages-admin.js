@@ -1,9 +1,9 @@
 // 관리자 전용 페이지: 대시보드, 사용자, 작업, 문의, 피드백, 팀 요청, 공지, 결제, 업로드 큐, 설정, 감사 로그
 import { get, post, patch, del } from './api.js';
-import { esc, html, raw, toast, modal, confirmDialog, fmtDate, fmtNum, fmtKRW, creditsLabel, qs, qsa, on } from './ui.js';
+import { esc, html, raw, toast, modal, confirmDialog, fmtDate, fmtNum, fmtKRW, fmtBytes, creditsLabel, qs, qsa, on, emptyState } from './ui.js';
 
 const adminPage = (fn) => Object.assign(fn, { requiresAuth: true, requiresAdmin: true });
-const SECTIONS = [['', '대시보드'], ['users', '사용자'], ['jobs', '작업 모니터'], ['inquiries', '문의'], ['feedback', '피드백'], ['teams', '팀 요청'], ['notices', '공지'], ['payments', '결제'], ['publish', '업로드 큐'], ['settings', '설정'], ['audit', '감사 로그']];
+const SECTIONS = [['', '대시보드'], ['users', '사용자'], ['jobs', '작업 모니터'], ['activities', '렌더/큐'], ['inquiries', '문의'], ['feedback', '피드백'], ['teams', '팀 요청'], ['notices', '공지'], ['payments', '결제'], ['orders', '주문'], ['publish', '업로드 큐'], ['system', '시스템 상태'], ['errors', '오류 로그'], ['storage', '저장공간'], ['backups', '백업/복원'], ['settings', '설정'], ['audit', '감사 로그']];
 const tabs = (cur) => `<div class="tabs">${SECTIONS.map(([k, l]) => `<a class="tab ${cur === k ? 'active' : ''}" href="#/admin${k ? `/${k}` : ''}">${l}</a>`).join('')}</div>`;
 
 export const dashboard = adminPage(async ({ view, state }) => {
@@ -16,7 +16,7 @@ export const dashboard = adminPage(async ({ view, state }) => {
 
 export const section = adminPage(async (ctx) => {
   const { params } = ctx;
-  const fn = { users, jobs, inquiries, feedback, teams, notices, payments, publish, settings, audit }[params.section];
+  const fn = { users, jobs, inquiries, feedback, teams, notices, payments, publish, settings, audit, system, errors, storage, backups, orders, activities }[params.section];
   if (!fn) { ctx.view.innerHTML = '<div class="card">없는 섹션</div>'; return; }
   await fn(ctx);
 });
@@ -99,4 +99,65 @@ async function settings({ view, state }) {
 async function audit({ view }) {
   const list = await get('/api/admin/audit');
   view.innerHTML = html`${raw(tabs('audit'))}<h1>감사 로그</h1><div class="card"><div class="log" style="max-height:600px">${raw(list.map((l) => `${esc(fmtDate(l.createdAt))} ${esc(l.action)} ${esc(JSON.stringify({ ...l, id: undefined, createdAt: undefined, updatedAt: undefined, action: undefined }))}`).join('\n'))}</div></div>`;
+}
+
+// ---- 시스템 상태: API / DB(스토어) / 스토리지(Blob) / 렌더 워커(ffmpeg 등) / 큐 ----
+const okBadge = (ok, label) => `<span class="badge ${ok ? 'badge-success' : 'badge-danger'}">${esc(label || (ok ? '정상' : '문제'))}</span>`;
+async function system({ view, navigate }) {
+  const [s, diag] = await Promise.all([get('/api/admin/system'), get('/api/admin/diag').catch(() => null)]);
+  const r = s.render || {}; const q = s.queue || {}; const db = s.db || {}; const sto = s.storage || {};
+  const records = Object.values(db.records || {}).reduce((a, b) => a + b, 0);
+  view.innerHTML = html`${raw(tabs('system'))}<div class="row row-between"><h1>시스템 상태</h1><div class="row"><span class="tiny muted">${fmtDate(s.at)} 기준</span><button class="btn btn-sm" id="sys-refresh">새로고침</button></div></div>
+    <div class="admin-grid">
+      <div class="card admin-stat"><div class="muted small">API 서버</div><div class="value">${raw(okBadge(s.api?.ok))}</div><div class="tiny muted">업타임 ${Math.round((s.uptimeSec || 0) / 60)}분 · 메모리 ${s.memoryMB}MB · Node ${s.node} · ${s.serverless ? '서버리스(Vercel)' : '상시 서버'}</div></div>
+      <div class="card admin-stat"><div class="muted small">DB (JSON 스토어)</div><div class="value">${raw(okBadge(db.remoteOk !== false))}</div><div class="tiny muted">${esc(db.kind || '-')} · 레코드 ${fmtNum(records)}${db.remoteLatencyMs != null ? ` · 원격 ${db.remoteLatencyMs}ms` : ''}${db.lastRemoteLoad ? ` · 동기화 ${fmtDate(db.lastRemoteLoad)}` : ''}${db.dirty ? ' · 저장 대기' : ''}${db.error ? ` · <span style="color:var(--danger)">${esc(db.error)}</span>` : ''}</div></div>
+      <div class="card admin-stat"><div class="muted small">파일 스토리지</div><div class="value">${raw(okBadge(sto.localWritable !== false && sto.remoteOk !== false))}</div><div class="tiny muted">로컬 ${sto.localWritable ? '쓰기 가능' : '쓰기 불가'} · 사용 ${fmtBytes(sto.usedBytes)} · Blob ${sto.remoteOk === true ? `정상 (${sto.remoteLatencyMs}ms)` : sto.remoteOk === false ? `<span style="color:var(--danger)">${esc(sto.remoteError || '오류')}</span>` : '미사용'}</div></div>
+      <div class="card admin-stat"><div class="muted small">렌더 워커</div><div class="value">${raw(okBadge(Boolean(r.ffmpeg), r.ffmpeg ? '실제 렌더링' : '렌더 계획만'))}</div><div class="tiny muted">${raw(['ffmpeg', 'ffprobe', 'ytdlp', 'whisper', 'demucs'].map((k) => `${k} ${r[k] ? '✓' : '✗'}`).join(' · '))}</div></div>
+      <div class="card admin-stat"><div class="muted small">작업 큐</div><div class="value">${(q.running || []).length} / ${q.concurrency ?? '-'}</div><div class="tiny muted">대기 ${(q.queued || []).length} · 처리 중 작업 ${s.jobs?.processing ?? 0} · 24h 실패 ${s.jobs?.failed24h ?? 0}</div><a class="small" href="#/admin/activities">렌더/큐 →</a></div>
+      <div class="card admin-stat"><div class="muted small">오류 (24h)</div><div class="value">${s.errors?.last24h ?? 0}</div><div class="tiny muted">전체 ${s.errors?.total ?? 0} · 서버 ${s.errors?.server ?? 0} · 클라이언트 ${s.errors?.client ?? 0}</div><a class="small" href="#/admin/errors">오류 로그 →</a></div>
+      <div class="card admin-stat"><div class="muted small">TTS 엔진</div><div class="value">${raw(okBadge(true, s.tts ? Object.entries(s.tts).filter(([, v]) => v === true || v?.available).length + '개 사용 가능' : '브라우저'))}</div><div class="tiny muted">${esc(s.tts ? JSON.stringify(s.tts).slice(0, 140) : '-')}</div></div>
+    </div>
+    ${diag ? raw(`<div class="card" style="margin-top:16px"><h3>진단 (환경 · 외부 연동)</h3><div class="log" style="max-height:360px">${esc(JSON.stringify(diag, null, 2))}</div></div>`) : ''}`;
+  qs('#sys-refresh').onclick = () => navigate(`/admin/system?r=${Date.now()}`);
+}
+
+async function errors({ view, query, navigate }) {
+  const { items, stats } = await get(`/api/admin/errors?${new URLSearchParams({ source: query.source || '', level: query.level || '' })}`);
+  view.innerHTML = html`${raw(tabs('errors'))}<div class="row row-between"><h1>오류 로그 <span class="badge badge-soft">24h ${stats.last24h} · 전체 ${stats.total}</span></h1><div class="row"><div class="chips">${raw([['', '전체'], ['server', '서버'], ['client', '클라이언트']].map(([v, l]) => `<a class="chip ${(query.source || '') === v ? 'active' : ''}" href="#/admin/errors${v ? `?source=${v}` : ''}">${l}</a>`).join(''))}</div><button class="btn btn-sm btn-danger" id="err-clear">모두 지우기</button></div></div>
+    ${items.length ? raw(`<div class="card table-wrap"><table class="table"><tr><th>일시</th><th>출처</th><th>라우트</th><th>메시지</th><th>사용자</th><th></th></tr>${items.map((e) => `<tr><td>${fmtDate(e.createdAt)}</td><td><span class="badge ${e.source === 'client' ? 'badge-soft' : 'badge-danger'}">${esc(e.source)}</span></td><td class="tiny">${esc(e.route || '-')}</td><td>${esc(e.message)}</td><td class="tiny">${esc((e.userId || '-').slice(0, 8))}</td><td>${e.stack ? `<button class="btn btn-sm" data-stack="${e.id}">스택</button>` : ''}</td></tr>`).join('')}</table></div>`) : raw(emptyState('기록된 오류가 없습니다.', '서버 5xx 오류와 브라우저에서 보고된 오류가 여기에 쌓입니다.', [], '✅'))}`;
+  qs('#err-clear').onclick = async () => { if (await confirmDialog('오류 로그를 모두 지울까요?')) { await post('/api/admin/errors/clear'); navigate(`/admin/errors?r=${Date.now()}`); } };
+  on(view, 'click', '[data-stack]', (e, t) => { const it = items.find((x) => x.id === t.dataset.stack); modal(`<pre class="log" style="max-height:60vh;white-space:pre-wrap">${esc(it.stack)}</pre>${it.meta ? `<div class="tiny muted">${esc(JSON.stringify(it.meta))}</div>` : ''}`, { title: it.message.slice(0, 60), wide: true }); });
+}
+
+async function storage({ view }) {
+  const rows = await get('/api/admin/storage');
+  const total = rows.reduce((s, r) => s + r.uploadBytes + r.outputBytes, 0);
+  view.innerHTML = html`${raw(tabs('storage'))}<h1>저장공간 사용량 <span class="badge badge-soft">전체 ${fmtBytes(total)}</span></h1>
+    ${rows.length ? raw(`<div class="card table-wrap"><table class="table"><tr><th>사용자</th><th>업로드</th><th>업로드 용량</th><th>결과물</th><th>결과물 용량</th><th>합계</th></tr>${rows.map((r) => `<tr><td><a href="#/admin/users/${r.userId}">${esc(r.email)}</a></td><td>${r.uploads}</td><td>${fmtBytes(r.uploadBytes)}</td><td>${r.outputs}</td><td>${fmtBytes(r.outputBytes)}</td><td><b>${fmtBytes(r.uploadBytes + r.outputBytes)}</b></td></tr>`).join('')}</table></div>`) : raw(emptyState('사용자가 없습니다.'))}
+    <p class="tiny muted" style="margin-top:8px">서버리스(Vercel)에서는 업로드·결과물이 Vercel Blob 에 저장되고, 프로그램/자체 호스팅에서는 데이터 폴더에 저장됩니다.</p>`;
+}
+
+async function backups({ view, navigate }) {
+  const { items, lastBackupAt } = await get('/api/admin/backups');
+  view.innerHTML = html`${raw(tabs('backups'))}<div class="row row-between"><h1>백업 / 복원</h1><div class="row"><span class="tiny muted">마지막 자동 백업 ${lastBackupAt ? fmtDate(lastBackupAt) : '없음'} (하루 1회)</span><button class="btn btn-primary btn-sm" id="bk-now">지금 백업</button></div></div>
+    <p class="small muted">전체 데이터(사용자·프로젝트·자막·설정)를 JSON 스냅샷으로 저장합니다. 복원은 기본적으로 <b>병합</b>(현재 데이터를 지우지 않고 빠진 항목만 채움)으로 동작하며, 복원 직전 상태도 자동 백업됩니다.</p>
+    ${items.length ? raw(`<div class="card table-wrap"><table class="table"><tr><th>시각</th><th>위치</th><th>사유</th><th>크기</th><th></th></tr>${items.map((b) => `<tr><td>${fmtDate(b.at)}</td><td>${esc(b.where)}</td><td>${esc(b.reason || '-')}</td><td>${fmtBytes(b.size)}</td><td><div class="row"><button class="btn btn-sm btn-primary" data-restore="${esc(b.id)}" data-merge="1">병합 복원</button><button class="btn btn-sm btn-danger" data-restore="${esc(b.id)}" data-merge="0">전체 덮어쓰기</button></div></td></tr>`).join('')}</table></div>`) : raw(emptyState('백업이 없습니다.', '"지금 백업"을 누르거나 하루 1회 자동 백업을 기다리세요.', [], '🗄️'))}`;
+  qs('#bk-now').onclick = async (e) => { e.target.disabled = true; try { const r = await post('/api/admin/backups'); toast(`백업 완료 (${fmtBytes(r.size)})`); navigate(`/admin/backups?r=${Date.now()}`); } catch (err) { toast(err.message, 'error'); e.target.disabled = false; } };
+  on(view, 'click', '[data-restore]', async (e, t) => { const merge = t.dataset.merge === '1'; if (!(await confirmDialog(merge ? '이 백업을 병합 복원할까요? 현재 데이터는 유지되고 빠진 항목이 채워집니다.' : '이 백업으로 전체를 덮어쓸까요? 백업 이후의 변경은 사라집니다 (복원 직전 상태는 자동 백업됩니다).'))) return; try { const r = await post(`/api/admin/backups/${encodeURIComponent(t.dataset.restore)}/restore`, { merge }); toast(`복원 완료: ${JSON.stringify(r.restored || r)}`.slice(0, 120)); navigate(`/admin/backups?r=${Date.now()}`); } catch (err) { toast(err.message, 'error', 6000); } });
+}
+
+async function orders({ view }) {
+  const list = await get('/api/admin/orders');
+  const st = { created: ['생성', 'badge-soft'], pending: ['입금 대기', 'badge-warn'], paid: ['결제 완료', 'badge-success'], failed: ['실패', 'badge-danger'] };
+  view.innerHTML = html`${raw(tabs('orders'))}<h1>주문 (${list.length}) <span class="badge badge-soft">토스페이먼츠 · Stripe</span></h1>
+    ${list.length ? raw(`<div class="card table-wrap"><table class="table"><tr><th>생성</th><th>주문번호</th><th>사용자</th><th>요금제</th><th>금액</th><th>게이트웨이</th><th>상태</th><th>결제 시각</th></tr>${list.map((o) => { const [l, c] = st[o.status] || [o.status, 'badge-soft']; return `<tr><td>${fmtDate(o.createdAt)}</td><td class="tiny">${esc(o.id)}</td><td class="tiny">${esc(o.customerEmail || o.userId.slice(0, 8))}</td><td>${esc(o.planName || o.planId)}</td><td>${o.currency === 'USD' ? `$${o.amount}` : fmtKRW(o.amount)}</td><td>${esc(o.gateway)}${o.testMode ? ' <span class="badge badge-warn">테스트</span>' : ''}</td><td><span class="badge ${c}">${esc(l)}</span>${o.error ? ` <span class="tiny" style="color:var(--danger)">${esc(o.error)}</span>` : ''}</td><td>${o.paidAt ? fmtDate(o.paidAt) : '-'}</td></tr>`; }).join('')}</table></div>`) : raw(emptyState('주문이 없습니다.', '가격 안내에서 결제를 시작하면 주문이 만들어지고, 결제사 승인 후 "결제 완료"가 됩니다.', [], '🧾'))}`;
+}
+
+async function activities({ view, navigate }) {
+  const { queue, recent } = await get('/api/admin/activities');
+  const st = { queued: 'badge-warn', processing: 'badge-warn', done: 'badge-success', failed: 'badge-danger', cancelled: 'badge-soft' };
+  view.innerHTML = html`${raw(tabs('activities'))}<div class="row row-between"><h1>렌더 / 작업 큐</h1><button class="btn btn-sm" id="aq-refresh">새로고침</button></div>
+    <div class="admin-grid"><div class="card admin-stat"><div class="muted small">동시 실행</div><div class="value">${queue.running?.length ?? queue.running ?? 0} / ${queue.concurrency}</div></div><div class="card admin-stat"><div class="muted small">대기</div><div class="value">${queue.queued?.length ?? queue.queued ?? 0}</div></div><div class="card admin-stat"><div class="muted small">완료 누적</div><div class="value">${queue.completed ?? '-'}</div></div><div class="card admin-stat"><div class="muted small">실패 누적</div><div class="value">${queue.failed ?? '-'}</div></div></div>
+    <div class="card table-wrap" style="margin-top:12px"><table class="table"><tr><th>시작</th><th>사용자</th><th>종류</th><th>제목</th><th>상태</th><th>진행</th><th>소요</th><th>오류</th></tr>${raw(recent.map((a) => `<tr><td>${fmtDate(a.startedAt || a.createdAt)}</td><td class="tiny">${esc((a.userId || '').slice(0, 8))}</td><td>${esc(a.kind)}</td><td>${esc(a.title || '-')}</td><td><span class="badge ${st[a.status] || 'badge-soft'}">${esc(a.status)}</span></td><td>${a.progress ?? 0}%${a.step ? ` <span class="tiny muted">${esc(a.step)}</span>` : ''}</td><td>${a.durationMs != null ? `${Math.round(a.durationMs / 1000)}s` : '-'}</td><td class="tiny" style="color:var(--danger)">${esc(a.error || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">기록이 없습니다.</td></tr>')}</table></div>`;
+  qs('#aq-refresh').onclick = () => navigate(`/admin/activities?r=${Date.now()}`);
 }

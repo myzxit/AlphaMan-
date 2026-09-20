@@ -6,8 +6,30 @@
   <title>AlphaMan - AI 하이라이트 쇼츠 자동 제작 · AI 자막 편집기</title>
   <meta name="description" content="링크만 입력하면 롱폼 영상을 여러 편의 쇼츠로. AI 기반 자막 생성 및 편집, 음성 인식, 의미 기반 분할, 다국어 번역을 원클릭으로. YouTube Shorts, TikTok, Reels 크리에이터를 위한 최적의 솔루션." />
   <meta name="keywords" content="자막 생성,AI 자막,음성 인식,STT,자동 자막,숏폼 편집,YouTube Shorts,TikTok,Reels,영상 편집,자막 편집기,다국어 번역,subtitle generator,video editor,쇼츠 자동 제작,하이라이트" />
+  <link rel="canonical" href="https://alphaman.vercel.app/" />
+  <meta name="robots" content="index,follow" />
+  <meta name="theme-color" content="#6c5ce7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="AlphaMan" />
+  <meta property="og:title" content="AlphaMan - AI 하이라이트 쇼츠 자동 제작 · AI 자막 편집기" />
+  <meta property="og:description" content="링크만 입력하면 롱폼 영상을 여러 편의 쇼츠로. AI 자막, 음성 인식, 다국어 번역, AI 재구성, 내 목소리 TTS 를 웹과 PC 프로그램에서." />
+  <meta property="og:url" content="https://alphaman.vercel.app/" />
+  <meta property="og:image" content="https://alphaman.vercel.app/icons/icon-512.png" />
+  <meta property="og:locale" content="ko_KR" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="AlphaMan - AI 하이라이트 쇼츠 자동 제작 · AI 자막 편집기" />
+  <meta name="twitter:description" content="링크만 입력하면 롱폼 영상을 여러 편의 쇼츠로. AI 자막·번역·재구성·내 목소리 TTS." />
+  <meta name="twitter:image" content="https://alphaman.vercel.app/icons/icon-512.png" />
+  <meta name="application-name" content="AlphaMan" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="AlphaMan" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&family=Black+Han+Sans&family=Jua&family=Do+Hyeon&family=Gasoek+One&family=Gowun+Dodum&family=Dongle:wght@700&family=Gaegu:wght@700&family=Nanum+Gothic:wght@400;800&family=IBM+Plex+Sans+KR:wght@700&display=swap" />
   <link rel="stylesheet" href="/styles.css" />
@@ -16,6 +38,7 @@
   </script>
 </head>
 <body>
+  <a class="skip-link" href="#view">본문으로 건너뛰기</a>
   <div id="app" class="app-shell">
     <aside id="sidebar" class="sidebar" aria-label="사이드바">
       <div class="sidebar-head">
@@ -29,8 +52,11 @@
       <header class="topbar">
         <button class="icon-btn only-mobile" id="sidebar-open" aria-label="메뉴 열기">☰</button>
         <div id="topbar-title" class="topbar-title"></div>
+        <form id="global-search-form" class="global-search" role="search"><input id="global-search" type="search" placeholder="검색 (Ctrl+/)" aria-label="전체 검색: 프로젝트 · 파일 · 자막 · 템플릿 · 작업" autocomplete="off" /></form>
         <div class="topbar-actions">
           <span id="platform-badge" class="badge badge-soft"></span>
+          <button class="btn btn-sm btn-accent hidden" id="install-btn" aria-label="앱 설치" title="홈 화면 / 바탕화면에 설치">⬇ 설치</button>
+          <button class="icon-btn" id="help-btn" aria-label="키보드 단축키 도움말" title="단축키 도움말 (?)">?</button>
           <button class="icon-btn" id="theme-btn" aria-label="테마 변경" title="테마 변경 (Ctrl+Shift+L)">◐</button>
           <button class="icon-btn" id="notif-btn" aria-label="알림" title="Notifications alt+T">🔔<span id="notif-count" class="pill hidden"></span></button>
           <button class="icon-btn" id="feedback-btn" aria-label="의견 보내기" title="의견 보내기">✎</button>
@@ -45,7 +71,7 @@
   </div>
 
   <div id="drawer-notifs" class="drawer hidden" role="dialog" aria-label="알림">
-    <div class="drawer-head"><strong>알림</strong><div><button class="btn btn-ghost btn-sm" id="notif-read-all">모두 읽음</button><button class="icon-btn" data-close="drawer-notifs" aria-label="닫기">✕</button></div></div>
+    <div class="drawer-head"><strong>알림</strong><div><button class="btn btn-ghost btn-sm" id="notif-read-all">모두 읽음</button><button class="btn btn-ghost btn-sm" id="notif-clear" title="모든 알림 삭제">모두 삭제</button><button class="icon-btn" data-close="drawer-notifs" aria-label="닫기">✕</button></div></div>
     <div id="notif-list" class="drawer-body"></div>
   </div>
 
@@ -63,6 +89,7 @@
   <div id="toast-root" class="toast-root" aria-live="polite"></div>
   <div id="backdrop" class="backdrop hidden"></div>
 
+  <noscript><div class="card" style="margin:24px">AlphaMan 을 사용하려면 JavaScript 를 켜주세요.</div></noscript>
   <script type="module" src="/js/app.js"></script>
 </body>
 </html>

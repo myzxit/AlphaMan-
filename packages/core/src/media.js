@@ -20,6 +20,8 @@ export function toolAvailability() {
     ffprobe: Boolean(which('ffprobe')),
     ytdlp: Boolean(which('yt-dlp')),
     whisper: Boolean(which('whisper') || which('whisper-cpp') || which('main')),
+    demucs: Boolean(which('demucs')),
+    edgeTts: Boolean(which('edge-tts')),
   };
 }
 
@@ -170,10 +172,10 @@ export async function fetchYoutubeMeta(videoId) {
 
 // 실제 클립 렌더링 (프로그램 버전/ffmpeg 설치 환경). ffmpeg 이 없으면 렌더 계획(JSON)만 남긴다.
 // hookAudio: 첫 3초 AI 후킹 보이스 파일(있으면 앞에 섞고 원본은 덕킹) · vocalsPath: demucs 로 분리한 목소리 트랙(있으면 원본 오디오 대신 사용)
-export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1, outro = null, hookAudio = null, vocalsPath = null }) {
+export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1, outro = null, hookAudio = null, vocalsPath = null, cropBottom = 0 }) {
   const dims = ratio === '9:16' ? '1080:1920' : ratio === '1:1' ? '1080:1080' : ratio === '4:5' ? '1080:1350' : '1920:1080';
   const [w, h] = dims.split(':');
-  const filters = [`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'setsar=1'];
+  const filters = [...(cropBottom > 0 ? [`crop=iw:ih*${(1 - cropBottom).toFixed(2)}:0:0`] : []), `scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'setsar=1'];
   if (subtitlePath) filters.push(`subtitles='${subtitlePath.replace(/'/g, "\\'")}'`);
   if (speedUp !== 1) filters.push(`setpts=PTS/${speedUp}`);
   let args;

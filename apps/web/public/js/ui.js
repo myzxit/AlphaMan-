@@ -74,6 +74,34 @@ export function readVideoMeta(file) {
   });
 }
 
+export function fmtBytes(n) { n = Number(n || 0); if (n >= 1e9) return `${(n / 1e9).toFixed(2)}GB`; if (n >= 1e6) return `${(n / 1e6).toFixed(1)}MB`; if (n >= 1e3) return `${Math.round(n / 1e3)}KB`; return `${n}B`; }
+
+// ---- 빈 상태 · 오류 화면 · 스켈레톤 (모든 페이지 공용 패턴) ----
+// actions: [[href, label, id?]] — id 가 있으면 페이지 스크립트가 클릭을 가로챌 수 있다
+export function emptyState(title, body = '', actions = [], icon = '🗂️') {
+  return `<div class="empty-state" role="status"><div class="empty-icon" aria-hidden="true">${icon}</div><h3>${esc(title)}</h3>${body ? `<p class="muted">${esc(body)}</p>` : ''}${actions.length ? `<div class="row" style="justify-content:center">${actions.map(([href, label, id], i) => `<a class="btn ${i === 0 ? 'btn-primary' : ''}" href="${esc(href)}" ${id ? `id="${esc(id)}"` : ''}>${esc(label)}</a>`).join('')}</div>` : ''}</div>`;
+}
+// 오류 유형별 안내 + 재시도/취소/뒤로 가기. retry 는 함수(호출) 또는 문자열(hash)
+export function errorScreen(err, { title = '', retry = null, back = null, hint = '' } = {}) {
+  const status = err && err.status;
+  const kind = !navigator.onLine || /Failed to fetch|네트워크|NetworkError/i.test(err?.message || '') ? 'network' : status === 401 ? 'auth' : status === 403 ? 'forbidden' : status === 404 ? 'notfound' : status === 413 ? 'upload' : status === 429 ? 'rate' : status === 503 ? 'maintenance' : status >= 500 ? 'server' : 'generic';
+  const preset = { network: ['📡', '네트워크 연결을 확인해주세요', '인터넷 연결이 끊겼거나 서버에 닿을 수 없습니다. 연결 후 다시 시도하세요.'], auth: ['🔒', '로그인이 필요합니다', '세션이 만료되었거나 로그인되어 있지 않습니다.'], forbidden: ['⛔', '접근 권한이 없습니다', '이 항목은 다른 사용자의 것이거나 권한이 없는 기능입니다.'], notfound: ['🔍', '찾을 수 없습니다', '삭제되었거나 주소가 잘못되었을 수 있습니다.'], upload: ['📦', '파일이 너무 큽니다', '허용된 크기를 넘었습니다. 파일을 줄이거나 링크로 진행하세요.'], rate: ['⏳', '요청이 너무 많습니다', '잠시 후 다시 시도해주세요.'], maintenance: ['🛠️', '잠시 이용할 수 없습니다', '서비스 점검 중이거나 외부 서비스가 준비되지 않았습니다.'], server: ['💥', '서버 오류가 발생했습니다', '문제가 기록되었습니다. 잠시 후 다시 시도하거나 문의해주세요.'], generic: ['⚠️', '문제가 발생했습니다', ''] }[kind];
+  const rid = `err-${Math.random().toString(36).slice(2, 8)}`;
+  const actions = [];
+  if (retry) actions.push(typeof retry === 'string' ? `<a class="btn btn-primary" href="${esc(retry)}">다시 시도</a>` : `<button class="btn btn-primary" data-retry="${rid}">다시 시도</button>`);
+  if (kind === 'auth') actions.push(`<a class="btn btn-primary" href="#/login?next=${encodeURIComponent(location.hash.replace(/^#/, '') || '/')}">로그인</a>`);
+  actions.push(back ? `<a class="btn" href="${esc(back)}">돌아가기</a>` : '<button class="btn" data-back>뒤로 가기</button>');
+  if (kind === 'server' || kind === 'generic') actions.push('<a class="btn btn-ghost" href="#/support">문의하기</a>');
+  if (typeof retry === 'function') setTimeout(() => { const b = document.querySelector(`[data-retry="${rid}"]`); if (b) b.onclick = retry; }, 0);
+  setTimeout(() => { document.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => (history.length > 1 ? history.back() : (location.hash = '#/')); }); }, 0);
+  return `<div class="error-screen card" role="alert"><div class="empty-icon" aria-hidden="true">${preset[0]}</div><h3>${esc(title || preset[1])}</h3><p class="muted">${esc(preset[2])}</p><p class="small"><code>${esc(err?.message || String(err))}</code></p>${hint ? `<p class="tiny muted">${esc(hint)}</p>` : ''}<div class="row" style="justify-content:center">${actions.join('')}</div></div>`;
+}
+export function skeleton(n = 3, { lines = 3 } = {}) {
+  return `<div class="skeleton-list" aria-busy="true" aria-label="불러오는 중">${Array.from({ length: n }, () => `<div class="card skeleton-card">${Array.from({ length: lines }, (_, i) => `<div class="skeleton-line" style="width:${[70, 95, 55, 80][i % 4]}%"></div>`).join('')}</div>`).join('')}</div>`;
+}
+// 진행률 링 (렌더/업로드 등 단계 표시)
+export function progressRing(pct, label = '') { const p = Math.max(0, Math.min(100, Math.round(pct || 0))); return `<div class="ring" style="--p:${p}" role="progressbar" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"><span>${p}%</span>${label ? `<div class="tiny muted">${esc(label)}</div>` : ''}</div>`; }
+
 export function debounce(fn, ms = 300) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 export function qs(sel, root = document) { return root.querySelector(sel); }
 export function qsa(sel, root = document) { return [...root.querySelectorAll(sel)]; }

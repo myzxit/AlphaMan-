@@ -70,9 +70,21 @@ export async function login({ view, state, navigate, query }) {
   view.innerHTML = html`<div class="card" style="max-width:440px;margin:40px auto"><h2>로그인</h2><p class="muted">AlphaMan 웹사이트·프로그램 버전 공통 계정</p>
     <form id="login-form"><div class="field"><label>이메일</label><input name="email" type="email" required autocomplete="email" /></div><div class="field"><label>비밀번호</label><input name="password" type="password" required autocomplete="current-password" /></div><button class="btn btn-primary btn-block">로그인</button></form>
     <button class="btn btn-block" id="google-btn" style="margin-top:8px">G Google 계정으로 간편 로그인</button>
-    <p class="small muted" style="margin-top:12px">계정이 없으신가요? <a href="#/signup">무료로 시작하기</a></p></div>`;
-  qs('#login-form').onsubmit = async (e) => { e.preventDefault(); const f = new FormData(e.target); try { const r = await post('/api/auth/login', Object.fromEntries(f)); setToken(r.token); await window.AlphaManApp.refreshUser(); toast(`환영합니다, ${r.user.name}님`); navigate(query.next || (r.user.isAdmin ? '/admin' : '/dashboard')); } catch (err) { toast(err.message, 'error'); } };
+    <div id="login-error" class="small hidden" style="margin-top:10px;color:var(--danger)" role="alert"></div>
+    <p class="small muted" style="margin-top:12px">계정이 없으신가요? <a href="#/signup">무료로 시작하기</a> · <a href="#" id="reset-link">비밀번호를 잊으셨나요?</a></p></div>`;
+  qs('#login-form').onsubmit = async (e) => {
+    e.preventDefault(); const f = new FormData(e.target); const btn = e.target.querySelector('button'); btn.disabled = true; btn.textContent = '로그인 중...'; const errBox = qs('#login-error'); errBox.classList.add('hidden');
+    try { const r = await post('/api/auth/login', { email: String(f.get('email') || '').trim().toLowerCase(), password: f.get('password') }); setToken(r.token); await window.AlphaManApp.refreshUser(); toast(`환영합니다, ${r.user.name}님`); navigate(query.next || (r.user.isAdmin ? '/admin' : '/dashboard')); }
+    catch (err) { errBox.textContent = err.message; errBox.classList.remove('hidden'); toast(err.message, 'error', 6000); btn.disabled = false; btn.textContent = '로그인'; if (/비밀번호/.test(err.message)) qs('#reset-link').focus(); }
+  };
   qs('#google-btn').onclick = () => googleFlow(navigate, query.next);
+  qs('#reset-link').onclick = (e) => { e.preventDefault(); resetFlow(qs('#login-form [name=email]').value); };
+}
+
+// 비밀번호 재설정 요청: 관리자 문의로 접수되어 관리자가 임시 비밀번호를 발급한다 (이메일 발송 서비스 연결 전)
+function resetFlow(email = '') {
+  const m = modal(html`<p class="small muted">가입한 이메일을 입력하면 관리자에게 비밀번호 재설정 요청이 접수됩니다. 관리자가 확인 후 새 비밀번호를 알림·이메일로 안내합니다.</p><div class="field"><label>이메일</label><input id="rs-email" type="email" value="${email}" placeholder="you@example.com" /></div><button class="btn btn-primary btn-block" id="rs-go">재설정 요청 보내기</button><div id="rs-out" class="small" style="margin-top:8px"></div>`, { title: '비밀번호 재설정' });
+  m.el.querySelector('#rs-go').onclick = async (ev) => { ev.target.disabled = true; try { const r = await post('/api/auth/reset-request', { email: m.el.querySelector('#rs-email').value.trim().toLowerCase() }); m.el.querySelector('#rs-out').innerHTML = `✅ ${esc(r.message || '요청이 접수되었습니다.')}`; } catch (err) { m.el.querySelector('#rs-out').innerHTML = `❌ ${esc(err.message)}`; ev.target.disabled = false; } };
 }
 
 function googleFlow(navigate, next) {
@@ -101,11 +113,45 @@ export async function pricing({ view, state, navigate }) {
   qsa('[data-plan]').forEach((b) => { b.onclick = () => checkout(b.dataset.plan, 'domestic', state, navigate); });
 }
 
+// 실제 결제: 서버가 주문(금액)을 만들고 → 국내는 토스페이먼츠 결제창(v2), 해외는 Stripe Checkout 으로 이동 → 성공 리다이렉트(#/pay/success)에서 서버가 승인한다.
+let tossSdk = null;
+function loadTossSdk() {
+  if (window.TossPayments) return Promise.resolve(window.TossPayments);
+  if (tossSdk) return tossSdk;
+  tossSdk = new Promise((resolve, reject) => { const s = document.createElement('script'); s.src = 'https://js.tosspayments.com/v2/standard'; s.onload = () => resolve(window.TossPayments); s.onerror = () => reject(new Error('토스페이먼츠 결제창을 불러오지 못했습니다 (네트워크/광고 차단 확인).')); document.head.appendChild(s); });
+  return tossSdk;
+}
 export async function checkout(planId, region, state, navigate) {
-  if (!state.user) return navigate(`/login?next=${encodeURIComponent(`/pricing`)}`);
+  if (!state.user) return navigate(`/login?next=${encodeURIComponent(region === 'overseas' ? '/overseas-payment' : '/pricing')}`);
   if (planId === 'free') return navigate('/dashboard');
-  const m = modal(html`<p>${region === 'overseas' ? '해외 카드 (USD 청구)' : '토스페이먼츠 (KRW)'}로 결제합니다.</p><div class="field"><label>결제 수단</label><select id="pay-method"><option value="card">신용/체크카드</option><option value="transfer">계좌이체</option><option value="paypal">PayPal</option></select></div><button class="btn btn-primary btn-block" id="pay-go">결제 진행</button>`, { title: '결제' });
-  m.el.querySelector('#pay-go').onclick = async () => { try { const r = await post('/api/billing/checkout', { planId, region, method: m.el.querySelector('#pay-method').value }); await window.AlphaManApp.refreshUser(); m.close(); toast(`결제 완료: ${r.currency} ${r.amount}`); navigate('/credits'); } catch (err) { toast(err.message, 'error'); } };
+  const cfg = state.info.payments || {};
+  const gw = region === 'overseas' ? cfg.stripe : cfg.toss;
+  if (!gw || !gw.enabled) { modal(`<p>${region === 'overseas' ? '해외 결제(Stripe)' : '국내 결제(토스페이먼츠)'}가 아직 설정되지 않았습니다.</p><p class="small muted">관리자가 서버 환경변수에 ${region === 'overseas' ? 'STRIPE_SECRET_KEY' : 'TOSS_CLIENT_KEY / TOSS_SECRET_KEY'} 를 설정하면 실제 결제가 열립니다. 그 전까지 결제는 진행되지 않으며 이용권은 <a href="#/support">문의하기</a>로 요청할 수 있습니다.</p>`, { title: '결제 준비 중' }); return; }
+  const m = modal(html`<p>${region === 'overseas' ? 'Stripe (해외 카드 · USD 청구)' : '토스페이먼츠 (KRW)'}로 결제합니다.${gw.testMode ? raw(' <span class="badge badge-warn">테스트 모드 · 실제 청구 없음</span>') : ''}</p>
+    ${region === 'overseas' ? '' : raw('<div class="field"><label>결제 수단</label><select id="pay-method"><option value="card">신용/체크카드</option><option value="transfer">계좌이체</option><option value="virtual">가상계좌 (입금 대기)</option><option value="easy">간편결제 (토스페이·카카오페이·네이버페이 등)</option></select></div>')}
+    <div class="tiny muted">결제창에서 결제를 완료하면 이용권이 즉시 지급됩니다. 금액은 서버에서 확정되며 결제창에 표시됩니다.${gw.testMode ? ' 테스트 모드에서는 토스 테스트 카드 정보(예: 아무 카드번호)로 결제 흐름만 확인됩니다.' : ''}</div>
+    <button class="btn btn-primary btn-block" id="pay-go" style="margin-top:10px">결제창 열기</button><div id="pay-err" class="small hidden" style="color:var(--danger);margin-top:8px" role="alert"></div>`, { title: '결제' });
+  m.el.querySelector('#pay-go').onclick = async (ev) => {
+    ev.target.disabled = true; ev.target.textContent = '주문 생성 중...';
+    const fail = (err) => { const box = m.el.querySelector('#pay-err'); box.textContent = err.message; box.classList.remove('hidden'); ev.target.disabled = false; ev.target.textContent = '결제창 열기'; };
+    try {
+      const method = m.el.querySelector('#pay-method')?.value || 'card';
+      const order = await post('/api/billing/orders', { planId, region, method });
+      const base = `${location.origin}${location.pathname}`;
+      if (order.gateway === 'stripe') {
+        const r = await post('/api/billing/stripe/session', { orderId: order.id, successUrl: `${base}?pay=success`, cancelUrl: `${base}?pay=fail&message=${encodeURIComponent('결제가 취소되었습니다.')}` });
+        location.href = r.url; return;
+      }
+      ev.target.textContent = '결제창 여는 중...';
+      const TossPayments = await loadTossSdk();
+      const tp = TossPayments(cfg.toss.clientKey);
+      const payment = tp.payment({ customerKey: order.customerKey });
+      // 리다이렉트 URL 은 해시 없이 쿼리로 받는다 (결제사가 붙이는 paymentKey/orderId/amount 가 해시 뒤에 붙지 않도록) → app.js 가 #/pay/success 로 옮긴다
+      const common = { amount: { currency: 'KRW', value: order.amount }, orderId: order.id, orderName: order.orderName, successUrl: `${base}?pay=success`, failUrl: `${base}?pay=fail`, customerEmail: order.customerEmail, customerName: order.customerName };
+      const map = { card: { method: 'CARD', card: { useEscrow: false, flowMode: 'DEFAULT', useCardPoint: false, useAppCardOnly: false } }, transfer: { method: 'TRANSFER', transfer: { cashReceipt: { type: '소득공제' }, useEscrow: false } }, virtual: { method: 'VIRTUAL_ACCOUNT', virtualAccount: { cashReceipt: { type: '소득공제' }, useEscrow: false, validHours: 24 } }, easy: { method: 'CARD', card: { useEscrow: false, flowMode: 'DEFAULT' } } };
+      await payment.requestPayment({ ...common, ...(map[method] || map.card) });
+    } catch (err) { fail(err); }
+  };
 }
 
 export async function overseas({ view, state, navigate }) {

@@ -100,7 +100,9 @@ export class CreditService {
   }
 
   // 결제: 국내(토스) / 해외 카드 전용 페이지
+  // 시뮬레이션 결제(테스트 전용). 실제 결제는 PaymentService(토스페이먼츠/Stripe)에서 승인 후 이용권을 지급한다.
   checkout(userId, { planId, region = 'domestic', method = 'card' }) {
+    if (process.env.ALPHAMAN_FAKE_PAYMENTS !== '1') throw new ApiError(503, '결제는 결제창(토스페이먼츠/Stripe)을 통해서만 진행됩니다. /api/billing/orders 로 주문을 만든 뒤 결제창을 열어주세요.');
     const plan = [...PLANS, ...ADDON_PLANS.publish, ...ADDON_PLANS.topic].find((p) => p.id === planId);
     if (!plan) throw new ApiError(404, '요금제를 찾을 수 없습니다.');
     if (plan.price === 0) throw new ApiError(400, '무료 요금제는 결제가 필요 없습니다.');

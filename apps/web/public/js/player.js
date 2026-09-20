@@ -3,6 +3,10 @@
 // 이어서 재생하며 자막 · 후킹 · 챕터 카드를 화면에 겹쳐 그린다. 완성본과 같은 순서/길이/자막으로 결과를 확인할 수 있다.
 import { get, downloadUrl, getToken } from './api.js';
 import { esc, modal, fmtTime, toast } from './ui.js';
+import { registerShortcuts } from './shortcuts.js';
+
+// 시간 표시: 프레임 단위 이동 시 mm:ss.f 까지
+const fmtT = (s) => { const f = Math.floor((Math.max(0, s) % 1) * 10); return `${fmtTime(s)}.${f}`; };
 
 // 방금 만들어진 작업은 다른 서버 인스턴스에 아직 동기화되지 않았을 수 있어 404 를 잠깐 재시도한다
 export async function getWithRetry(path, { tries = 4, delayMs = 800 } = {}) {
@@ -28,7 +32,7 @@ function loadYoutubeApi() {
 function html5Adapter(el) {
   return {
     ready: new Promise((resolve, reject) => { if (el.readyState >= 1) resolve(); el.onloadedmetadata = () => resolve(); el.onerror = () => reject(new Error('영상을 불러올 수 없습니다. 원본 파일이 서버에 없거나 코덱을 지원하지 않습니다.')); }),
-    seek: (t) => { el.currentTime = t; }, play: () => el.play().catch(() => {}), pause: () => el.pause(), rate: (r) => { el.playbackRate = r; }, time: () => el.currentTime, mute: (m) => { el.muted = m; }, destroy: () => { el.pause(); el.removeAttribute('src'); el.load(); },
+    seek: (t) => { el.currentTime = t; }, play: () => el.play().catch(() => {}), pause: () => el.pause(), rate: (r) => { el.playbackRate = r; }, time: () => el.currentTime, mute: (m) => { el.muted = m; }, volume: (v) => { el.volume = v; }, destroy: () => { el.pause(); el.removeAttribute('src'); el.load(); },
   };
 }
 async function youtubeAdapter(host, videoId) {
@@ -38,7 +42,7 @@ async function youtubeAdapter(host, videoId) {
   const ready = new Promise((r) => { readyResolve = r; });
   player = new YT.Player(div, { videoId, width: '100%', height: '100%', playerVars: { controls: 0, rel: 0, modestbranding: 1, playsinline: 1, disablekb: 1, iv_load_policy: 3, origin: location.origin }, events: { onReady: () => readyResolve(), onError: () => toast('유튜브 영상을 재생할 수 없습니다 (비공개/삭제/퍼가기 제한).', 'error', 6000) } });
   return {
-    ready, seek: (t) => player.seekTo(t, true), play: () => player.playVideo(), pause: () => player.pauseVideo(), rate: (r) => player.setPlaybackRate(Math.max(0.25, Math.min(2, r))), time: () => (player.getCurrentTime ? player.getCurrentTime() : 0), mute: (m) => (m ? player.mute() : player.unMute()), destroy: () => { try { player.destroy(); } catch { /* ignore */ } },
+    ready, seek: (t) => player.seekTo(t, true), play: () => player.playVideo(), pause: () => player.pauseVideo(), rate: (r) => player.setPlaybackRate(Math.max(0.25, Math.min(2, r))), time: () => (player.getCurrentTime ? player.getCurrentTime() : 0), mute: (m) => (m ? player.mute() : player.unMute()), volume: (v) => player.setVolume && player.setVolume(Math.round(v * 100)), destroy: () => { try { player.destroy(); } catch { /* ignore */ } },
   };
 }
 
@@ -46,14 +50,18 @@ async function youtubeAdapter(host, videoId) {
 export async function mountPlayer(container, spec, { autoplay = false } = {}) {
   const ratio = spec.ratio && spec.ratio !== 'auto' ? spec.ratio : '16:9';
   container.innerHTML = `<div class="player r-${ratio.replace(':', '-')}"><div class="player-stage"><div class="player-media"></div><div class="player-card hidden"></div><div class="player-hook hidden"></div><div class="player-sub"></div><div class="player-kind hidden"></div><div class="player-loading">불러오는 중...</div></div>
-    <div class="player-bar"><button class="btn btn-sm player-play">▶</button><div class="player-progress"><div class="player-buffer"></div><div class="player-fill"></div>${(spec.items || []).map((it) => `<div class="player-mark k-${esc(it.kind)}" style="left:${(it.newStart / (spec.durationSec || 1)) * 100}%;width:${Math.max(0.2, ((it.newEnd - it.newStart) / (spec.durationSec || 1)) * 100)}%" title="${esc(it.kind)} ${esc(it.title || '')}"></div>`).join('')}${(spec.chapters || []).map((c) => `<div class="player-chapter" style="left:${(c.at / (spec.durationSec || 1)) * 100}%" title="${esc(c.title)}"></div>`).join('')}</div><span class="player-time">00:00 / ${fmtTime(spec.durationSec)}</span><button class="btn btn-sm player-mute" title="음소거">🔊</button></div>
+    <div class="player-bar"><button class="btn btn-sm player-play" aria-label="재생/일시정지 (Space)">▶</button><button class="btn btn-sm player-step" data-step="-1" title="이전 프레임 (←)" aria-label="이전 프레임">⏮</button><button class="btn btn-sm player-step" data-step="1" title="다음 프레임 (→)" aria-label="다음 프레임">⏭</button><div class="player-progress" role="slider" aria-label="재생 위치" tabindex="0"><div class="player-buffer"></div><div class="player-fill"></div><div class="player-ab hidden"></div>${(spec.items || []).map((it) => `<div class="player-mark k-${esc(it.kind)}" style="left:${(it.newStart / (spec.durationSec || 1)) * 100}%;width:${Math.max(0.2, ((it.newEnd - it.newStart) / (spec.durationSec || 1)) * 100)}%" title="${esc(it.kind)} ${esc(it.title || '')}"></div>`).join('')}${(spec.chapters || []).map((c) => `<div class="player-chapter" style="left:${(c.at / (spec.durationSec || 1)) * 100}%" title="${esc(c.title)}"></div>`).join('')}</div><span class="player-time">00:00.0 / ${fmtTime(spec.durationSec)}</span>
+      <select class="player-speed" aria-label="재생 속도" title="재생 속도">${[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => `<option value="${r}" ${r === 1 ? 'selected' : ''}>${r}x</option>`).join('')}</select>
+      <button class="btn btn-sm player-loop" title="반복 재생 (L)" aria-pressed="false">🔁</button><button class="btn btn-sm player-ab-a" title="구간 반복 시작 ([)">A</button><button class="btn btn-sm player-ab-b" title="구간 반복 끝 (])">B</button>
+      <button class="btn btn-sm player-mute" title="음소거 (M)" aria-label="음소거">🔊</button><input class="player-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="볼륨" title="볼륨" /><button class="btn btn-sm player-fs" title="전체화면 (F)" aria-label="전체화면">⛶</button></div>
     <div class="tiny muted player-note"></div>`;
   const root = container.querySelector('.player'); const mediaHost = root.querySelector('.player-media');
   const subEl = root.querySelector('.player-sub'); const cardEl = root.querySelector('.player-card'); const hookEl = root.querySelector('.player-hook'); const kindEl = root.querySelector('.player-kind'); const loading = root.querySelector('.player-loading');
-  const playBtn = root.querySelector('.player-play'); const fill = root.querySelector('.player-fill'); const timeEl = root.querySelector('.player-time'); const note = root.querySelector('.player-note');
+  const playBtn = root.querySelector('.player-play'); const fill = root.querySelector('.player-fill'); const timeEl = root.querySelector('.player-time'); const note = root.querySelector('.player-note'); const abEl = root.querySelector('.player-ab');
   const items = (spec.items || []).slice().sort((a, b) => a.newStart - b.newStart);
   const total = spec.durationSec || (items.length ? items[items.length - 1].newEnd : 0) || 1;
   let media = null; let outT = 0; let playing = false; let raf = null; let cur = -1; let cardStartedAt = 0; let cardElapsed = 0; let lastTick = 0; let muted = false; let destroyed = false;
+  let loop = false; let abA = null; let abB = null; let speed = 1; let volume = 1;
   const direct = spec.rendered && spec.renderUrl; // 렌더된 MP4 를 바로 재생
   // TTS 큐(후킹 보이스 · 내레이션): 렌더된 MP4 에는 이미 섞여 있으므로 미리보기(타임라인) 모드에서만 재생
   const cues = direct ? [] : ((spec.audio && spec.audio.cues) || []).map((c) => ({ ...c, played: false }));
@@ -110,39 +118,64 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
       cardEl.innerHTML = it.cta ? `<div class="player-cta"><div>${esc(it.title || '구독 · 좋아요 · 알림 설정')}</div><div class="cta-btn">▶ 구독${it.channel ? ` · ${esc(it.channel)}` : ''}</div><div class="cta-icons">👍 좋아요 &nbsp; 🔔 알림 설정 &nbsp; 💬 댓글</div></div>` : `<div>${esc(it.title || '')}</div>${it.section ? `<div class="tiny">${esc(it.section)}</div>` : ''}`;
       media.pause(); cardElapsed = t - it.newStart; cardStartedAt = performance.now();
     }
-    else { cardEl.classList.add('hidden'); const speed = it.speed || 1; media.rate(speed); media.seek(it.start + (t - it.newStart) * speed); if (playing) media.play(); }
+    else { cardEl.classList.add('hidden'); const sp = (it.speed || 1) * speed; media.rate(sp); media.seek(it.start + (t - it.newStart) * (it.speed || 1)); if (playing) media.play(); }
   };
   const drawOverlays = (t) => {
     const sub = (spec.subtitles || []).find((s) => t >= s.start && t < s.end);
     subEl.textContent = sub && !(direct && spec.burnedSubtitles) ? sub.text : '';
     const hookOn = spec.hook && t < (spec.hook.durationSec || 3);
     hookEl.classList.toggle('hidden', !hookOn); if (hookOn) hookEl.textContent = `🔥 ${spec.hook.text}`;
-    fill.style.width = `${Math.min(100, (t / total) * 100)}%`; timeEl.textContent = `${fmtTime(t)} / ${fmtTime(total)}`;
+    fill.style.width = `${Math.min(100, (t / total) * 100)}%`; timeEl.textContent = `${fmtT(t)} / ${fmtTime(total)}`;
     if (playing) for (const c of cues) if (!c.played && t >= c.at && t < c.at + 4) playCue(c);
   };
+  const ended = () => { if (abA != null && abB != null) return seekTo(abA); if (loop) { seekTo(0); return; } stop(); };
   const tick = () => {
     if (destroyed) return;
-    if (direct) { outT = media.time(); drawOverlays(outT); if (playing) raf = requestAnimationFrame(tick); return; }
+    if (abA != null && abB != null && playing && outT >= abB) { seekTo(abA); }
+    if (direct) { outT = media.time(); drawOverlays(outT); if (playing && outT >= total - 0.05) ended(); else if (playing) raf = requestAnimationFrame(tick); return; }
     const it = items[cur];
     if (it) {
-      if (it.kind === 'card') { outT = it.newStart + cardElapsed + (playing ? (performance.now() - cardStartedAt) / 1000 : 0); if (outT >= it.newEnd) { if (cur + 1 < items.length) enter(cur + 1, items[cur + 1].newStart); else stop(); } }
-      else { const mt = media.time(); outT = it.newStart + (mt - it.start) / (it.speed || 1); if (mt >= it.end - 0.05 || outT >= it.newEnd) { if (cur + 1 < items.length) enter(cur + 1, items[cur + 1].newStart); else stop(); } }
+      if (it.kind === 'card') { outT = it.newStart + cardElapsed + (playing ? ((performance.now() - cardStartedAt) / 1000) * speed : 0); if (outT >= it.newEnd) { if (cur + 1 < items.length) enter(cur + 1, items[cur + 1].newStart); else return ended(); } }
+      else { const mt = media.time(); outT = it.newStart + (mt - it.start) / (it.speed || 1); if (mt >= it.end - 0.05 || outT >= it.newEnd) { if (cur + 1 < items.length) enter(cur + 1, items[cur + 1].newStart); else return ended(); } }
     }
     drawOverlays(outT);
     if (playing) raf = requestAnimationFrame(tick);
   };
-  const play = () => { playing = true; playBtn.textContent = '⏸'; if (direct) media.play(); else { if (cur < 0) enter(itemAt(outT) < 0 ? 0 : itemAt(outT), outT); const it = items[cur]; if (it?.kind === 'card') { cardStartedAt = performance.now(); } else media.play(); } cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
+  const play = () => { playing = true; playBtn.textContent = '⏸'; if (direct) { media.rate(speed); if (outT >= total - 0.05) seekTo(0); media.play(); } else { if (cur < 0 || outT >= total - 0.05) { if (outT >= total - 0.05) outT = 0; enter(itemAt(outT) < 0 ? 0 : itemAt(outT), outT); } const it = items[cur]; if (it?.kind === 'card') { cardStartedAt = performance.now(); } else media.play(); } cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
   const pause = () => { playing = false; playBtn.textContent = '▶'; media.pause(); stopCues(); const it = items[cur]; if (it?.kind === 'card') cardElapsed = outT - it.newStart; cancelAnimationFrame(raf); drawOverlays(outT); };
   const stop = () => { pause(); outT = direct ? media.time() : total; drawOverlays(outT); };
   const seekTo = (t) => { outT = Math.max(0, Math.min(total, t)); resetCues(outT); if (direct) { media.seek(outT); drawOverlays(outT); return; } const i = Math.max(0, itemAt(outT)); enter(i, outT); if (!playing) media.pause(); drawOverlays(outT); };
+  const frame = (d) => { if (playing) pause(); seekTo(outT + d); };
+  const setSpeed = (r) => { speed = Number(r) || 1; root.querySelector('.player-speed').value = String(speed); if (direct) media.rate(speed); else { const it = items[cur]; if (it && it.kind !== 'card') media.rate((it.speed || 1) * speed); } };
+  const toggleMute = () => { muted = !muted; applyMute(); root.querySelector('.player-mute').textContent = muted ? '🔇' : '🔊'; };
+  const toggleLoop = () => { loop = !loop; const b = root.querySelector('.player-loop'); b.classList.toggle('active', loop); b.setAttribute('aria-pressed', String(loop)); note.dataset.loop = loop ? '반복' : ''; toast(loop ? '반복 재생 켜짐' : '반복 재생 꺼짐', 'info', 1200); };
+  const drawAb = () => { const on = abA != null && abB != null; abEl.classList.toggle('hidden', abA == null); if (abA != null) { abEl.style.left = `${(abA / total) * 100}%`; abEl.style.width = `${((on ? abB : Math.min(total, abA + 0.5)) - abA) / total * 100}%`; } root.querySelector('.player-ab-a').classList.toggle('active', abA != null); root.querySelector('.player-ab-b').classList.toggle('active', abB != null); };
+  const setA = () => { if (abA != null && abB == null) { abA = null; abB = null; toast('구간 반복 해제', 'info', 1200); } else { abA = outT; abB = null; toast(`구간 시작 ${fmtT(abA)} — 끝 지점에서 ] 또는 B 를 누르세요`, 'info', 2500); } drawAb(); };
+  const setB = () => { if (abA == null) return toast('먼저 [ 또는 A 로 시작 지점을 지정하세요.', 'info', 2000); if (outT <= abA + 0.2) return toast('끝 지점은 시작 이후여야 합니다.', 'info', 2000); abB = outT; drawAb(); toast(`구간 반복 ${fmtT(abA)} ~ ${fmtT(abB)}`, 'info', 2000); };
+  const fullscreen = async () => { const stage = root.querySelector('.player-stage'); try { if (document.fullscreenElement) await document.exitFullscreen(); else if (stage.requestFullscreen) await stage.requestFullscreen(); else if (stage.webkitRequestFullscreen) stage.webkitRequestFullscreen(); else root.classList.toggle('player-fake-fs'); } catch { root.classList.toggle('player-fake-fs'); } };
   playBtn.onclick = () => (playing ? pause() : play());
-  root.querySelector('.player-progress').onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); seekTo(((e.clientX - r.left) / r.width) * total); };
-  root.querySelector('.player-mute').onclick = (e) => { muted = !muted; applyMute(); e.target.textContent = muted ? '🔇' : '🔊'; };
+  root.querySelectorAll('.player-step').forEach((b) => { b.onclick = () => frame(Number(b.dataset.step) / 30); });
+  // 진행 바: 클릭 + 드래그(마우스·터치) 탐색
+  const prog = root.querySelector('.player-progress');
+  const seekFromEvent = (e) => { const r = prog.getBoundingClientRect(); seekTo(((e.clientX - r.left) / r.width) * total); };
+  let dragging = false;
+  prog.addEventListener('pointerdown', (e) => { dragging = true; prog.setPointerCapture(e.pointerId); seekFromEvent(e); });
+  prog.addEventListener('pointermove', (e) => { if (dragging) seekFromEvent(e); });
+  prog.addEventListener('pointerup', () => { dragging = false; }); prog.addEventListener('pointercancel', () => { dragging = false; });
+  prog.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') { e.preventDefault(); frame(-1); } if (e.key === 'ArrowRight') { e.preventDefault(); frame(1); } });
+  root.querySelector('.player-mute').onclick = toggleMute;
+  root.querySelector('.player-volume').oninput = (e) => { volume = Number(e.target.value); media.volume && media.volume(volume); if (muted && volume > 0) toggleMute(); };
+  root.querySelector('.player-speed').onchange = (e) => setSpeed(e.target.value);
+  root.querySelector('.player-loop').onclick = toggleLoop; root.querySelector('.player-ab-a').onclick = setA; root.querySelector('.player-ab-b').onclick = setB; root.querySelector('.player-fs').onclick = fullscreen;
   root.querySelector('.player-stage').onclick = (e) => { if (e.target.closest('.player-bar')) return; playing ? pause() : play(); };
+  root.querySelector('.player-stage').ondblclick = (e) => { if (!e.target.closest('.player-bar')) fullscreen(); };
+  const onFs = () => root.classList.toggle('player-fs', document.fullscreenElement === root.querySelector('.player-stage'));
+  document.addEventListener('fullscreenchange', onFs);
+  const unregister = registerShortcuts({ playPause: () => (playing ? pause() : play()), frame, fullscreen, mute: toggleMute, loop: toggleLoop, loopA: setA, loopB: setB });
   if (!direct) { enter(0, 0); media.pause(); }
   drawOverlays(0);
   if (autoplay) play();
-  return { play, pause, seekTo, destroy() { destroyed = true; cancelAnimationFrame(raf); stopCues(); try { media.destroy(); } catch { /* ignore */ } } };
+  return { play, pause, seekTo, frame, setSpeed, fullscreen, get time() { return outT; }, destroy() { destroyed = true; cancelAnimationFrame(raf); stopCues(); unregister(); document.removeEventListener('fullscreenchange', onFs); try { media.destroy(); } catch { /* ignore */ } } };
 }
 
 // 인증이 필요한 스트림 URL: 프로그램/웹 모두 Bearer 토큰을 쿠키로도 보내므로 <video src> 에 그대로 쓸 수 있게 토큰 쿠키를 심는다

@@ -62,7 +62,7 @@ export class LibraryService {
     this.sync(userId);
     let items = this.store.find('library', (r) => r.userId === userId);
     // 원본 작업이 지워진 항목은 정리
-    items = items.filter((r) => { if (this._ref(r)) return true; this.store.remove('library', r.id); return false; });
+    items = items.filter((r) => { const ref = this._ref(r); if (!ref) { this.store.remove('library', r.id); return false; } const job = r.kind === 'shorts' ? this.store.get('jobs', ref.jobId) : ref; return !(job && job.deletedAt) && !r.deletedAt; });
     if (kind && LIBRARY_KINDS[kind]) items = items.filter((r) => r.kind === kind);
     if (favorite === '1' || favorite === true) items = items.filter((r) => r.favorite);
     if (q) { const needle = String(q).toLowerCase(); items = items.filter((r) => `${r.title} ${r.sourceTitle} ${(r.tags || []).join(' ')} ${r.note || ''}`.toLowerCase().includes(needle)); }
@@ -141,7 +141,7 @@ export class LibraryService {
         renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : null,
         source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map(sub), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
         zoomKeyframes: clip.zoomKeyframes || [], templateId: clip.templateId, transcriptExact: job.transcriptExact ?? null, thumbnail: clip.thumbnail || job.source.thumbnail || null,
-        outro: clip.outro || null, seo: clip.seo || null, cropBottom: 0,
+        outro: clip.outro || null, seo: clip.seo || null, cropBottom: clip.cropBottom || 0,
         audio: { muteOriginal: false, duckOriginal: true, cues: clip.audio?.aiHookVoice ? [cue(clip.audio.aiHookVoice, 0, this.store)] : [] },
         thumbnailSet: clip.thumbnailSet ? { ...clip.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/shorts/${clip.id}/image.svg?v=${encodeURIComponent(clip.thumbnailSet.updatedAt)}` } : null,
       };

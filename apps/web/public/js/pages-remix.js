@@ -10,7 +10,7 @@ const auth = (fn) => Object.assign(fn, { requiresAuth: true });
 const statusBadge = (s) => `<span class="badge ${s === 'done' ? 'badge-success' : s === 'failed' ? 'badge-danger' : 'badge-warn'}">${{ done: '완료', failed: '실패', queued: '대기', processing: '진행 중' }[s] || esc(s)}</span>`;
 function saveBlob(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
 
-export const remix = auth(async ({ view, state, navigate }) => {
+export const remix = auth(async ({ view, state, navigate, query }) => {
   const [defs, jobs, { profiles, freeVoices = [] }] = await Promise.all([get('/api/remix/defaults'), get('/api/remix/jobs'), get('/api/voice/profiles')]);
   view.innerHTML = html`<div class="row row-between"><h1>🪄 AI 재구성</h1><span class="badge">보유 이용권 ${creditsLabel(state.user)}</span></div>
     <p class="muted">영상 링크 또는 파일 하나만 넣으면 원본의 자막·효과음·배경음을 걷어내고 ${defs.limits.minMinutes}~${defs.limits.maxMinutes}분으로 길이를 맞춘 뒤, AI 가 새 자막·효과음·배경음·내레이션을 입혀 다시 구성합니다. 참고 유튜브 영상을 넣으면 그 영상의 구성과 호흡, 자막 스타일을 따라 재구성합니다.</p>
@@ -72,6 +72,7 @@ export const remix = auth(async ({ view, state, navigate }) => {
     catch (err) { uploadId = null; toast(err.message, 'error', 6000); }
   }
   if (window.alphaman?.pickVideo) qs('#r-pick-local').onclick = async () => { const p = await window.alphaman.pickVideo(); if (p) { localPath = p; qs('#r-local-path').textContent = p; tc.fromLocalPath(p); } };
+  if (query.upload) { const { prefillUpload } = await import('./pages-app.js'); const m = await prefillUpload(query.upload); if (m) { qsa('#r-tabs .tab')[1].click(); uploadId = m.id; qs('#r-file-meta').textContent = `${m.name} · ${fmtTime(m.durationSec)} · 파일 관리자에서 선택됨 (업로드 완료)`; qs('#r-upload-bar').style.width = '100%'; } }
   qs('#r-go').onclick = async (e) => {
     if (tc.state.busy) return toast('원본 대본 추출이 끝날 때까지 잠시 기다려주세요.', 'info');
     const vsel = qs('#r-voice').value || '';
