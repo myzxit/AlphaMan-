@@ -15,12 +15,12 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname.startsWith('/api/')) {
     // API: 네트워크 우선, 실패 시 마지막 성공 응답(정보성 GET 만)
     if (!/^\/api\/(info|notices|shorts\/templates|subtitles\/fonts|translate\/targets|voice\/free|remix\/defaults|plans)$/.test(url.pathname)) return;
-    e.respondWith(fetch(req).then((res) => { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); return res; }).catch(() => caches.match(req)));
+    e.respondWith(fetch(req).then((res) => { if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); } return res; }).catch(async () => (await caches.match(req)) || Response.error()));
     return;
   }
   // 앱 셸: 캐시 우선 + 백그라운드 갱신 (stale-while-revalidate)
   e.respondWith(caches.match(req).then((cached) => {
-    const fetching = fetch(req).then((res) => { if (res.ok) caches.open(VERSION).then((c) => c.put(req, res.clone())); return res; }).catch(() => cached || (req.mode === 'navigate' ? caches.match('/index.html') : undefined));
+    const fetching = fetch(req).then((res) => { if (res.ok) caches.open(VERSION).then((c) => c.put(req, res.clone())); return res; }).catch(async () => cached || (req.mode === 'navigate' ? (await caches.match('/index.html')) || Response.error() : Response.error()));
     return cached || fetching;
   }));
 });
