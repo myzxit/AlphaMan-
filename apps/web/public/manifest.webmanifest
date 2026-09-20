@@ -1,0 +1,10 @@
+{
+  "name": "AlphaMan",
+  "short_name": "AlphaMan",
+  "description": "AI 하이라이트 쇼츠 자동 제작 · AI 자막 편집기 · 디스커버리",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#6c5ce7",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

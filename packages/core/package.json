@@ -1,0 +1,17 @@
+{
+  "name": "@alphaman/core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AlphaMan 공통 코어 - 웹사이트 버전과 프로그램 버전이 함께 사용하는 모든 기능 엔진",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.80.0"
+  }
+}

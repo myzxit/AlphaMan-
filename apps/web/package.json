@@ -1,0 +1,7 @@
+{
+  "name": "@alphaman/web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AlphaMan 웹사이트 버전 UI (빌드 단계 없는 정적 SPA). 프로그램 버전도 같은 UI 를 사용한다."
+}

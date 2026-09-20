@@ -1,0 +1,39 @@
+{
+  "name": "@alphaman/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AlphaMan 프로그램(데스크톱) 버전 - 웹사이트 버전과 동일한 코어/UI 에 컴퓨터·USB 영상 직접 열기, 로컬 렌더링, 트레이 알림 추가",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --publish never",
+    "build:win": "electron-builder --win --publish never",
+    "build:mac": "electron-builder --mac --publish never",
+    "build:linux": "electron-builder --linux --publish never"
+  },
+  "dependencies": {
+    "@alphaman/core": "1.0.0",
+    "@alphaman/server": "1.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "app.alphaman.desktop",
+    "productName": "AlphaMan",
+    "artifactName": "AlphaMan-${version}-${os}-${arch}.${ext}",
+    "directories": { "output": "../../release" },
+    "files": ["main.cjs", "preload.cjs", "icon.png", "assets/**"],
+    "extraResources": [
+      { "from": "../../packages/core", "to": "app/packages/core", "filter": ["src/**", "package.json"] },
+      { "from": "../../apps/server", "to": "app/apps/server", "filter": ["src/**", "bin/**", "package.json"] },
+      { "from": "../../apps/web/public", "to": "app/apps/web/public" },
+      { "from": "../../node_modules/@anthropic-ai", "to": "app/node_modules/@anthropic-ai" }
+    ],
+    "win": { "target": ["nsis", "portable"] },
+    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.video" },
+    "linux": { "target": ["AppImage", "deb"], "category": "AudioVideo" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+  }
+}
