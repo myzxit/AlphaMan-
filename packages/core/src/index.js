@@ -66,7 +66,8 @@ export class AlphaMan {
   }
 
   async info() {
-    if (this.platform !== 'test' && process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.voice.detectFreeEngines().catch(() => {});
+    // 무료 TTS 탐색이 끝났으면 반영하되, 페이지 로딩을 막지 않도록 최대 0.3초만 기다린다
+    if (this.platform !== 'test' && process.env.ALPHAMAN_TTS_DETECT !== 'off') await Promise.race([this.voice.detectFreeEngines().catch(() => {}), new Promise((r) => setTimeout(r, 300))]);
     return {
       name: 'AlphaMan', version: VERSION, platform: this.platform, locales: LOCALES,
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,

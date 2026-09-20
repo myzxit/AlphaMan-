@@ -141,7 +141,7 @@ export class LibraryService {
         renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : null,
         source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map(sub), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
         zoomKeyframes: clip.zoomKeyframes || [], templateId: clip.templateId, transcriptExact: job.transcriptExact ?? null, thumbnail: clip.thumbnail || job.source.thumbnail || null,
-        outro: clip.outro || null, seo: clip.seo || null, cropBottom: 0,
+        outro: clip.outro || null, seo: clip.seo || null, cropBottom: clip.cropBottom || 0,
         audio: { muteOriginal: false, duckOriginal: true, cues: clip.audio?.aiHookVoice ? [cue(clip.audio.aiHookVoice, 0, this.store)] : [] },
         thumbnailSet: clip.thumbnailSet ? { ...clip.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/shorts/${clip.id}/image.svg?v=${encodeURIComponent(clip.thumbnailSet.updatedAt)}` } : null,
       };

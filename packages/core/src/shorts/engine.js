@@ -18,6 +18,7 @@ export const DEFAULT_OPTIONS = Object.freeze({
   aiHookVoice: false,        // AI 후킹 보이스 (첫 3초 멘트 TTS)
   voiceProfileId: null,      // 내 목소리 프로필 (없으면 voiceId 의 무료 한국어 목소리)
   voiceId: null,             // 무료 목소리 id (없으면 기본 '선희')
+  removeBurnedSubtitles: false, // 원본에 박힌 자막 가리기 (화면 하단을 잘라냄 — 원본 자막 위에 새 자막이 겹치지 않게)
   outro: true,               // 영상 마무리 구독·좋아요·알림 카드
   outroText: '구독 · 좋아요 · 알림 설정 🔔',
   outroSec: 2.5,
@@ -230,7 +231,7 @@ export class ShortsEngine {
     return this.store.insert('clips', {
       jobId: job.id, userId: job.userId, index, title: highlight.title, reason: highlight.reason, score: highlight.score,
       start: highlight.start, end: highlight.end, durationSec, ratio: opts.ratio, templateId: template.id, genre,
-      hook, cuts, zoomKeyframes, subtitles, translations, outro, seo,
+      hook, cuts, zoomKeyframes, subtitles, translations, outro, seo, cropBottom: opts.removeBurnedSubtitles ? 0.22 : 0,
       audio: { voiceEnhance: opts.voiceEnhance ? { denoise: true, removeMusic: true, loudnessLUFS: -14 } : null, aiHookVoice: opts.aiHookVoice && hook ? await this._hookVoice(job, hook, index) : null },
       status: 'edited', render: null, thumbnail: job.source.thumbnail, sourceTitle: job.source.title,
     });
@@ -264,7 +265,7 @@ export class ShortsEngine {
       let vocalsPath = null;
       if (clip.audio?.voiceEnhance?.removeMusic && which('demucs')) { vocalsPath = job.vocalsPath || await separateVocals(job.source.path, path.join(this.outputDir, job.userId, 'stems')); if (vocalsPath) this.store.update('jobs', job.id, { vocalsPath }); }
       const hookAudio = clip.audio?.aiHookVoice?.audioPath || null;
-      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio, outro: clip.outro || null, hookAudio, vocalsPath });
+      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio, outro: clip.outro || null, hookAudio, vocalsPath, cropBottom: clip.cropBottom || 0 });
     } else {
       result = { rendered: false, plan: { note: '유튜브 원본은 yt-dlp 로 내려받은 뒤 렌더링됩니다.', ratio: clip.ratio, start: clip.start, end: clip.end } };
     }
@@ -301,6 +302,7 @@ export class ShortsEngine {
     if (patch.hookText != null) allowed.hook = { ...(clip.hook || { style: 'custom', durationSec: 3, position: 'start' }), text: String(patch.hookText) };
     if (patch.outro !== undefined) allowed.outro = patch.outro ? { ...(clip.outro || { durationSec: 2.5, style: 'subscribe', channel: null }), text: String(patch.outro.text || patch.outro || DEFAULT_OPTIONS.outroText).slice(0, 60) } : null;
     if (typeof patch.removeSilence === 'boolean' && !patch.removeSilence) allowed.cuts = [];
+    if (typeof patch.removeBurnedSubtitles === 'boolean') allowed.cropBottom = patch.removeBurnedSubtitles ? 0.22 : 0;
     const updated = this.store.update('clips', clipId, { ...allowed, status: 'edited' });
     this.store.insert('auditLog', { userId, action: 'clip.edit', clipId, patch: Object.keys(allowed) });
     return updated;
