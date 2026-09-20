@@ -252,7 +252,8 @@ test('AI 재구성: 권리 확인 필수, 1~28분 범위, 참고 영상 스타�
   assert.equal(edited.result.plan.title, '새 제목');
   assert.equal(edited.result.sfx.length, 1);
   await a.remix.regenerate(user.id, job.id);
-  assert.equal(a.credits.balance(user.id), 200);
+  // 230(가입+지급) - 20(첫 작업) - 5(참고 쇼츠 작업) - 10(다시 만들기 50%)
+  assert.equal(a.credits.balance(user.id), 195);
   await waitFor(() => a.store.get('remixJobs', job.id).status === 'done', 8000);
   // 쇼츠 링크(짧은 원본)는 카드·리플레이·슬로모션으로 목표 길이까지 확장된다
   const short = await a.remix.create(user.id, { url: 'https://www.youtube.com/shorts/zyxwvutsrqp', rightsConfirmed: true, options: { targetMinutes: 10, estimatedDurationSec: 45 } });
