@@ -32,6 +32,11 @@ export const patch = (p, b) => api('PATCH', p, b);
 export const del = (p) => api('DELETE', p);
 
 export async function uploadFile(file, onProgress) {
+  const max = window.AlphaManApp?.state?.info?.uploadMaxBytes;
+  if (max && file.size > max) {
+    const mb = Math.round(max / 1024 / 1024 * 10) / 10;
+    return Promise.reject(new Error(`이 웹사이트 버전은 파일 업로드가 ${mb}MB 까지만 가능합니다 (${Math.round(file.size / 1024 / 1024)}MB). 영상 링크를 사용하거나, 프로그램(PC) 버전 또는 자체 호스팅에서는 2GB 까지 업로드할 수 있습니다.`));
+  }
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${BASE}/api/upload`);

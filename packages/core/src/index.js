@@ -63,6 +63,8 @@ export class AlphaMan {
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,
       tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), remixLimits: REMIX_LIMITS,
       adminEmail: ADMIN_ACCOUNT.email,
+      uploadMaxBytes: process.env.ALPHAMAN_UPLOAD_MAX_BYTES ? Number(process.env.ALPHAMAN_UPLOAD_MAX_BYTES) : (process.env.VERCEL ? 4.5 * 1024 * 1024 : 2 * 1024 * 1024 * 1024),
+      serverless: Boolean(process.env.VERCEL),
       settings: this.admin.settings(),
       content: CONTENT,
     };

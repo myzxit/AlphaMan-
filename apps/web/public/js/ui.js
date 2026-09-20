@@ -78,3 +78,37 @@ export function debounce(fn, ms = 300) { let t; return (...a) => { clearTimeout(
 export function qs(sel, root = document) { return root.querySelector(sel); }
 export function qsa(sel, root = document) { return [...root.querySelectorAll(sel)]; }
 export function on(root, event, selector, handler) { root.addEventListener(event, (e) => { const t = e.target.closest(selector); if (t && root.contains(t)) handler(e, t); }); }
+
+// 목소리 샘플 추출: 영상(MP4/MOV/WebM)이나 큰 오디오에서 브라우저가 직접 음성만 뽑아 16kHz 모노 WAV 로 줄인다 (60초 ≈ 1.9MB).
+// 업로드 크기를 수십~수백 배 줄여 업로드가 빨라지고 서버리스 요청 크기 제한(4.5MB)도 넘지 않는다.
+export async function extractVoiceSample(file, { maxSec = 60, sampleRate = 16000, onStatus = () => {} } = {}) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) throw new Error('이 브라우저는 오디오 추출을 지원하지 않습니다.');
+  onStatus('파일 읽는 중...');
+  const buf = await file.arrayBuffer();
+  const ctx = new AC();
+  let decoded;
+  try { decoded = await ctx.decodeAudioData(buf.slice(0)); } finally { ctx.close?.(); }
+  if (!decoded || decoded.duration < 1) throw new Error('음성 트랙이 없는 파일입니다. 목소리가 담긴 파일을 올려주세요.');
+  onStatus(`음성 ${Math.round(decoded.duration)}초 감지 · 앞부분 무음 건너뛰고 ${maxSec}초 추출 중...`);
+  // 앞부분 무음 건너뛰기 (RMS 기준)
+  const ch0 = decoded.getChannelData(0); const sr = decoded.sampleRate; const win = Math.floor(sr * 0.1);
+  let startSample = 0;
+  for (let i = 0; i + win < ch0.length; i += win) { let sum = 0; for (let j = i; j < i + win; j++) sum += ch0[j] * ch0[j]; if (Math.sqrt(sum / win) > 0.01) { startSample = Math.max(0, i - win); break; } }
+  const start = startSample / sr;
+  const dur = Math.min(maxSec, decoded.duration - start);
+  const frames = Math.ceil(dur * sampleRate);
+  const off = new OfflineAudioContext(1, frames, sampleRate);
+  const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start(0, start, dur);
+  const rendered = await off.startRendering();
+  const pcm = rendered.getChannelData(0);
+  // 볼륨 정규화
+  let peak = 0; for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+  const gain = peak > 0 ? Math.min(4, 0.9 / peak) : 1;
+  const wav = new ArrayBuffer(44 + pcm.length * 2); const v = new DataView(wav);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) { const x = Math.max(-1, Math.min(1, pcm[i] * gain)); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  const name = `${file.name.replace(/\.[^.]+$/, '')}.voice.wav`;
+  return { file: new File([wav], name, { type: 'audio/wav' }), durationSec: Math.round(dur * 10) / 10, originalDurationSec: Math.round(decoded.duration * 10) / 10, skippedSec: Math.round(start * 10) / 10 };
+}

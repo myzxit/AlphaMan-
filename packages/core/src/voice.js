@@ -53,6 +53,15 @@ export class VoiceService {
     } else throw new ApiError(400, '음성 샘플 파일을 올려주세요.');
     const ext = path.extname(filename).toLowerCase();
     if (!AUDIO_EXT.includes(ext)) throw new ApiError(400, `${ext.replace('.', '').toUpperCase()} 형식은 지원되지 않습니다. MP3, WAV, M4A 또는 영상 파일을 올려주세요.`);
+    // 영상/압축 오디오 샘플은 ffmpeg 이 있으면 16kHz 모노 WAV 로 변환해 둔다 (음성 클론 엔진 입력용)
+    if (ext !== '.wav' && which('ffmpeg')) {
+      try {
+        const dir = path.join(this.outputDir, userId, 'voice'); fs.mkdirSync(dir, { recursive: true });
+        const wav = path.join(dir, `sample-${Date.now()}.wav`);
+        await run('ffmpeg', ['-y', '-i', samplePath, '-vn', '-ac', '1', '-ar', '16000', '-t', String(MAX_SAMPLE_SEC), wav]);
+        samplePath = wav;
+      } catch (err) { console.warn('[voice] 샘플 변환 실패, 원본 사용:', err.message); }
+    }
     const meta = await probeAudio(samplePath);
     if (meta.durationSec < MIN_SAMPLE_SEC) throw new ApiError(400, `음성 샘플은 최소 ${MIN_SAMPLE_SEC}초 이상이어야 합니다. 아무 말이나 10~60초 정도 녹음해 주세요.`);
     if (meta.durationSec > MAX_SAMPLE_SEC) throw new ApiError(400, '음성 샘플은 10분 이하로 올려주세요.');
@@ -120,6 +129,20 @@ async function probeAudio(filePath) {
     } catch (err) { if (err instanceof ApiError) throw err; }
   }
   const size = fs.statSync(filePath).size;
+  // WAV 는 헤더에서 정확한 길이를 읽는다 (브라우저 추출 샘플은 항상 16kHz 모노 WAV)
+  try {
+    const fd = fs.openSync(filePath, 'r'); const head = Buffer.alloc(Math.min(size, 4096)); fs.readSync(fd, head, 0, head.length, 0); fs.closeSync(fd);
+    if (head.toString('ascii', 0, 4) === 'RIFF' && head.toString('ascii', 8, 12) === 'WAVE') {
+      let off = 12; let fmt = null; let dataSize = null;
+      while (off + 8 <= head.length) {
+        const id = head.toString('ascii', off, off + 4); const len = head.readUInt32LE(off + 4);
+        if (id === 'fmt ') fmt = { channels: head.readUInt16LE(off + 10), sampleRate: head.readUInt32LE(off + 12), bits: head.readUInt16LE(off + 22) };
+        if (id === 'data') { dataSize = len || (size - off - 8); break; }
+        off += 8 + len + (len % 2);
+      }
+      if (fmt && dataSize) return { durationSec: dataSize / (fmt.sampleRate * fmt.channels * (fmt.bits / 8)), sampleRate: fmt.sampleRate, channels: fmt.channels, codec: 'pcm', probedBy: 'wav-header' };
+    }
+  } catch { /* fallthrough */ }
   return { durationSec: Math.max(1, Math.round(size / (16 * 1024))), sampleRate: 44100, channels: 1, codec: 'unknown', probedBy: 'estimate' };
 }
 

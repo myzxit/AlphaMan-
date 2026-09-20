@@ -1,6 +1,6 @@
 // AI 재구성(리믹스) + 내 목소리 TTS 페이지
 import { get, post, patch, del, uploadFile, downloadUrl, getToken } from './api.js';
-import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, qs, qsa, on } from './ui.js';
+import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, extractVoiceSample, qs, qsa, on } from './ui.js';
 
 const auth = (fn) => Object.assign(fn, { requiresAuth: true });
 const statusBadge = (s) => `<span class="badge ${s === 'done' ? 'badge-success' : s === 'failed' ? 'badge-danger' : 'badge-warn'}">${{ done: '완료', failed: '실패', queued: '대기', processing: '진행 중' }[s] || esc(s)}</span>`;
@@ -133,7 +133,7 @@ export const voice = auth(async ({ view, state, navigate }) => {
   view.innerHTML = html`<h1>🎤 내 목소리 TTS</h1><p class="muted">아무 말이나 녹음한 목소리 파일(10~60초 권장)을 올리면 음성 프로필이 만들어지고, 쇼츠 AI 후킹 보이스와 AI 재구성 내레이션을 내 목소리로 읽어줍니다.</p>
     <div class="split"><div class="col"><div class="card"><h3>음성 프로필 만들기</h3>
       <div class="field"><label>이름</label><input id="v-name" placeholder="예: 내 목소리 (밝게)" /></div>
-      <div class="field"><label>목소리 샘플 (MP3/WAV/M4A 또는 영상)</label><input type="file" id="v-file" accept="audio/*,video/*" /><div id="v-file-meta" class="tiny muted"></div></div>
+      <div class="field"><label>목소리 샘플 — 오디오(MP3/WAV/M4A) 또는 영상(MP4/MOV/WebM) 파일</label><input type="file" id="v-file" accept="audio/*,video/*,.mp4,.mov,.m4a,.mp3,.wav,.webm" /><div id="v-file-meta" class="tiny muted"></div><div class="tiny muted">영상을 올려도 브라우저에서 목소리만 뽑아(앞 60초, 약 2MB) 올리므로 큰 MP4 도 몇 초면 업로드됩니다.</div></div>
       <div class="desktop-only"><button class="btn btn-sm" id="v-pick-local">컴퓨터에서 선택 (프로그램 전용)</button><span id="v-local-path" class="tiny muted"></span></div>
       <div class="field"><label>언어</label><select id="v-lang"><option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option></select></div>
       <label class="check"><input type="checkbox" id="v-consent"/> <span>이 목소리는 제 목소리이거나 사용 허가를 받은 목소리입니다.</span></label>
@@ -144,7 +144,23 @@ export const voice = auth(async ({ view, state, navigate }) => {
       <div class="card"><h3>최근 합성</h3>${raw(renders.length ? renders.slice(0, 10).map((r) => `<div class="small" style="padding:6px 0;border-bottom:1px dashed var(--border)">${esc(r.text.slice(0, 60))} <span class="tiny muted">${esc(r.engine)} · ${r.durationSec}초</span> ${r.audioPath ? `<audio controls src="${downloadUrl(`/api/voice/renders/${r.id}/audio`)}" style="width:100%"></audio>` : ''}</div>`).join('') : '<p class="muted">없음</p>')}</div>
       <div class="card small muted"><b>어디에 쓰이나요?</b><br/>· 쇼츠 스튜디오 → "AI 후킹 보이스" 켜고 음성 프로필 선택<br/>· AI 재구성 → 내레이션(오프닝·마무리 / 전체)<br/>· 여기서 바로 문장을 읽혀 MP3 로 저장</div></div></div>`;
   let uploadId = null; let localPath = null;
-  qs('#v-file').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; try { qs('#v-file-meta').textContent = `${f.name} 업로드 중...`; const up = await uploadFile(f); uploadId = up.id; qs('#v-file-meta').textContent = `${f.name} 업로드 완료 (${Math.round(f.size / 1024)}KB)`; } catch (err) { toast(err.message, 'error'); } };
+  qs('#v-file').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const meta = qs('#v-file-meta'); uploadId = null;
+    try {
+      let toUpload = f; let info = '';
+      try {
+        const ex = await extractVoiceSample(f, { maxSec: 60, onStatus: (t) => { meta.textContent = t; } });
+        toUpload = ex.file; info = ` · 원본 ${Math.round(f.size / 1024 / 1024 * 10) / 10}MB → 음성만 ${Math.round(ex.file.size / 1024)}KB (${ex.durationSec}초${ex.skippedSec ? `, 앞 무음 ${ex.skippedSec}초 제외` : ''})`;
+      } catch (exErr) {
+        if (f.size > 4 * 1024 * 1024) throw new Error(`브라우저에서 음성을 추출하지 못했습니다 (${exErr.message}). 파일이 커서 그대로 올릴 수 없으니 MP3/WAV 로 변환해 올려주세요.`);
+        info = ' · 원본 그대로 업로드';
+      }
+      meta.textContent = `${f.name} 업로드 중...${info}`;
+      const up = await uploadFile(toUpload, (p) => { meta.textContent = `${f.name} 업로드 ${p}%${info}`; });
+      uploadId = up.id; meta.textContent = `${f.name} 업로드 완료${info}`;
+    } catch (err) { meta.textContent = ''; toast(err.message, 'error', 7000); }
+  };
   if (window.alphaman?.pickVideo) qs('#v-pick-local').onclick = async () => { const p = await window.alphaman.pickVideo(); if (p) { localPath = p; qs('#v-local-path').textContent = p; } };
   qs('#v-create').onclick = async (e) => {
     if (!uploadId && !localPath) return toast('목소리 샘플 파일을 올려주세요.', 'error');
