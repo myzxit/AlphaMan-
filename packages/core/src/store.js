@@ -8,7 +8,29 @@ const COLLECTIONS = [
   'subtitleProjects', 'publishAccounts', 'publishQueue', 'topicReports',
   'inquiries', 'notifications', 'feedback', 'notices', 'referrals', 'teamRequests',
   'payments', 'pixieThreads', 'uploads', 'settings', 'auditLog', 'remixJobs', 'voiceProfiles', 'voiceRenders', 'library',
+  'tombstones', // 삭제 기록 {collection,id,at} — 여러 서버 인스턴스의 저장소를 병합할 때 삭제가 되살아나지 않도록
 ];
+const MAX_TOMBSTONES = 3000;
+
+// 두 스냅샷을 레코드 단위로 병합한다 (서버리스: 인스턴스마다 다른 변경을 서로 덮어쓰지 않도록).
+// 같은 id 는 updatedAt 이 최신인 쪽을, 한쪽에만 있는 레코드는 그대로 두되 삭제 기록(tombstone)이 더 최신이면 제거한다.
+export function mergeSnapshots(a, b) {
+  const out = {};
+  const tombs = new Map();
+  for (const t of [...(a?.tombstones || []), ...(b?.tombstones || [])]) { const k = `${t.collection}:${t.id}`; if (!tombs.has(k) || tombs.get(k).at < t.at) tombs.set(k, t); }
+  for (const c of COLLECTIONS) {
+    if (c === 'tombstones') continue;
+    const byId = new Map();
+    for (const rec of [...(Array.isArray(a?.[c]) ? a[c] : []), ...(Array.isArray(b?.[c]) ? b[c] : [])]) {
+      if (!rec || !rec.id) continue;
+      const prev = byId.get(rec.id);
+      if (!prev || String(rec.updatedAt || '') >= String(prev.updatedAt || '')) byId.set(rec.id, rec);
+    }
+    out[c] = [...byId.values()].filter((rec) => { const t = tombs.get(`${c}:${rec.id}`); return !(t && String(t.at) >= String(rec.updatedAt || rec.createdAt || '')); });
+  }
+  out.tombstones = [...tombs.values()].sort((x, y) => String(x.at).localeCompare(String(y.at))).slice(-MAX_TOMBSTONES);
+  return out;
+}
 
 export class Store {
   constructor(filePath, { remote = null } = {}) {
@@ -27,7 +49,8 @@ export class Store {
     if (!this.remote) return false;
     try {
       const raw = await this.remote.load();
-      if (raw) for (const c of COLLECTIONS) this.data[c] = Array.isArray(raw[c]) ? raw[c] : [];
+      // 원격본과 로컬(메모리)본을 병합: 아직 원격에 반영되지 않은 내 변경이 지워지지 않는다
+      if (raw) { const merged = mergeSnapshots(raw, this.data); for (const c of COLLECTIONS) this.data[c] = merged[c]; }
       this._lastRemoteLoad = Date.now();
       return Boolean(raw);
     } catch (err) { console.warn('[store] 원격 저장소 읽기 실패:', err.message); return false; }
@@ -66,8 +89,14 @@ export class Store {
     }
     this._dirty = false;
     if (this.remote) {
-      const json = JSON.stringify(this.data);
-      this._remoteSaving = (this._remoteSaving || Promise.resolve()).then(() => this.remote.save(json)).then(() => { this._lastRemoteLoad = Date.now(); }).catch((err) => console.warn('[store] 원격 저장소 쓰기 실패:', err.message));
+      // 원격 최신본을 읽어 내 변경과 병합한 뒤 저장 → 다른 인스턴스가 방금 저장한 사용자·프로필·작업이 사라지지 않는다
+      this._remoteSaving = (this._remoteSaving || Promise.resolve()).then(async () => {
+        let remote = null;
+        try { remote = await this.remote.load(); } catch (err) { console.warn('[store] 병합용 원격 읽기 실패 (내 데이터로 저장):', err.message); }
+        if (remote) { const merged = mergeSnapshots(remote, this.data); for (const c of COLLECTIONS) this.data[c] = merged[c]; }
+        await this.remote.save(JSON.stringify(this.data));
+        this._lastRemoteLoad = Date.now();
+      }).catch((err) => console.warn('[store] 원격 저장소 쓰기 실패:', err.message));
     }
   }
 
@@ -131,6 +160,7 @@ export class Store {
     const idx = col.findIndex((d) => d.id === id);
     if (idx < 0) return false;
     col.splice(idx, 1);
+    if (name !== 'tombstones' && this.remote) { this.data.tombstones.push({ collection: name, id, at: new Date().toISOString() }); if (this.data.tombstones.length > MAX_TOMBSTONES) this.data.tombstones.splice(0, this.data.tombstones.length - MAX_TOMBSTONES); }
     this.touch();
     return true;
   }

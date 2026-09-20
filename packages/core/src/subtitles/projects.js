@@ -1,7 +1,7 @@
 // 픽셀링 자막 편집기: 음성 인식 → 의미 기반 분할 → 파형 기반 편집 → 다국어 번역 → SRT/VTT/ASS 내보내기
 import path from 'node:path';
 import { ApiError } from '../errors.js';
-import { parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta } from '../media.js';
+import { parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, ensureLocalFile } from '../media.js';
 import { transcribe, semanticSplit, waveform, splitWords } from './stt.js';
 import { exportSubtitles, parseSRT } from './format.js';
 import { FONTS, SUBTITLE_STYLE_PRESETS } from './fonts.js';
@@ -26,9 +26,10 @@ export class SubtitleProjects {
   async createFromUpload(userId, { uploadId, language = 'ko', premium = false, transcript = null, transcriptText = '' }) {
     const up = this.store.get('uploads', uploadId);
     if (!up || up.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+    await ensureLocalFile(up);
     const meta = await probe(up.path);
     validateVideoMeta({ filename: up.filename, mimeType: up.mimeType, ...meta });
-    return this._create(userId, { source: { type: 'file', uploadId, path: up.path, title: path.parse(up.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height }, language, premium, extra: { transcript, transcriptText } });
+    return this._create(userId, { source: { type: 'file', uploadId, path: up.path, remoteUrl: up.remoteUrl || null, title: path.parse(up.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height }, language, premium, extra: { transcript, transcriptText } });
   }
 
   // 로컬 경로(프로그램 버전: 컴퓨터/USB의 MP4 를 직접 지정)

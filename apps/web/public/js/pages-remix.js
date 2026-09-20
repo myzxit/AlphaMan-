@@ -2,7 +2,7 @@
 import { get, post, patch, del, uploadFile, downloadUrl, getToken } from './api.js';
 import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, extractVoiceSample, qs, qsa, on } from './ui.js';
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
-import { mountPlayer } from './player.js';
+import { mountPlayer, getWithRetry } from './player.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
 import { listenFreeVoice, playProfileSample, playRender, stopAll } from './tts.js';
 
@@ -96,7 +96,7 @@ export const remixJob = auth(async ({ view, params, navigate }) => {
     view.innerHTML = html`<div class="row row-between"><div><a href="#/remix" class="small">← AI 재구성</a><h1>${r?.plan?.title || job.source.title}</h1><div class="muted small">원본: ${job.source.title} · ${fmtTime(job.source.durationSec)} · 목표 ${job.options.targetMinutes}분 · ${job.minutesCharged}분 차감${job.reference ? raw(` · 참고: <a href="${esc(job.reference.url)}" target="_blank" rel="noopener">${esc(job.reference.title)}</a>`) : ''}</div></div>
       <div class="row">${job.status === 'done' ? raw('<a class="btn" href="#/library?kind=remix">📁 보관함</a>') : ''}<button class="btn" id="rj-regen" ${job.status === 'done' || job.status === 'failed' ? '' : 'disabled'}>다시 만들기 (${(job.minutesCharged / 2).toFixed(1)}분)</button><button class="btn btn-danger" id="rj-del">삭제</button></div></div>
       ${job.status !== 'done' ? raw(`<div class="card"><div class="row row-between"><b>${esc(stepNames[job.step] || job.step)}</b><span>${job.progress}%</span></div><div class="progress"><div style="width:${job.progress}%"></div></div><div class="log" style="margin-top:10px">${job.log.map((l) => `${esc(l.at.slice(11, 19))} [${esc(l.step)}] ${esc(l.message)}`).join('\n')}</div>${job.error ? `<p class="badge badge-danger">${esc(job.error)}</p>` : ''}</div>`) : raw(renderResult(job))}`;
-    if (job.status === 'done') { const host = qs('#rj-player'); if (host) get(`/api/preview/remix/${job.id}`).then((spec) => mountPlayer(host, spec)).catch((err) => { host.innerHTML = `<div class="tiny muted">미리보기를 불러오지 못했습니다: ${esc(err.message)}</div>`; }); bindSeoButtons(view); }
+    if (job.status === 'done') { const host = qs('#rj-player'); if (host) getWithRetry(`/api/preview/remix/${job.id}`).then((spec) => mountPlayer(host, spec)).catch((err) => { host.innerHTML = `<div class="tiny muted">미리보기를 불러오지 못했습니다: ${esc(err.message)} <button class="btn btn-sm" onclick="location.reload()">다시 시도</button></div>`; }); bindSeoButtons(view); }
     on(view, 'click', '[data-play-narr]', async (e, t) => { const line = job.result?.narration?.lines?.[Number(t.dataset.playNarr)]; if (line) playRender(line); });
     qs('#rj-regen').onclick = async () => { if (!(await confirmDialog(`다시 만들면 이용권 ${(job.minutesCharged / 2).toFixed(1)}분이 차감됩니다.`))) return; try { job = await post(`/api/remix/jobs/${job.id}/regenerate`); await window.AlphaManApp.refreshUser(); draw(); poll(); } catch (err) { toast(err.message, 'error'); } };
     qs('#rj-del').onclick = async () => { if (await confirmDialog('작업을 삭제할까요?')) { await del(`/api/remix/jobs/${job.id}`); navigate('/remix'); } };
@@ -194,7 +194,12 @@ export const voice = auth(async ({ view, state, navigate }) => {
   qs('#v-create').onclick = async (e) => {
     if (!uploadId && !localPath) return toast('목소리 샘플 파일을 올려주세요.', 'error');
     e.target.disabled = true; e.target.textContent = '저장 중...';
-    try { const p = await post('/api/voice/profiles', { uploadId, localPath, name: qs('#v-name').value, language: qs('#v-lang').value, consent: qs('#v-consent').checked }); toast(`음성 프로필 "${p.name}" 을 저장했습니다. 샘플 듣기로 확인해보세요.`, 'info', 5000); navigate(`/voice?r=${Date.now()}`); }
+    try {
+      const p = await post('/api/voice/profiles', { uploadId, localPath, name: qs('#v-name').value, language: qs('#v-lang').value, consent: qs('#v-consent').checked });
+      // 저장 확인: 목록에 나타날 때까지 잠시 기다린다 (서버 인스턴스 동기화)
+      for (let i = 0; i < 6; i++) { const { profiles: now } = await get('/api/voice/profiles'); if (now.some((x) => x.id === p.id)) break; await new Promise((r) => setTimeout(r, 700)); }
+      toast(`음성 프로필 "${p.name}" 을 저장했습니다. 샘플 듣기로 확인해보세요.`, 'info', 5000); navigate(`/voice?r=${Date.now()}`);
+    }
     catch (err) { toast(err.message, 'error', 6000); e.target.disabled = false; e.target.textContent = '프로필 만들고 저장'; }
   };
   qs('#v-speak').onclick = async () => {

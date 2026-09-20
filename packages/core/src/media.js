@@ -67,6 +67,43 @@ export function validateVideoMeta(meta) {
   return { ok: true, ext, recommended: RECOMMENDED };
 }
 
+// 서버리스: 파일이 다른 인스턴스의 /tmp 에만 있을 수 있다. 원격 저장소(Vercel Blob) 사본이 있으면 내려받아 같은 경로에 둔다.
+export async function ensureLocalFile(rec) {
+  if (!rec) return null;
+  const p = rec.path;
+  if (p && fs.existsSync(p)) return p;
+  if (rec.remoteUrl && p) {
+    try {
+      const res = await fetch(rec.remoteUrl, { signal: AbortSignal.timeout(60000) });
+      if (res.ok) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(await res.arrayBuffer())); return p; }
+    } catch (err) { console.warn('[media] 원격 파일 내려받기 실패:', err.message); }
+  }
+  return p;
+}
+
+// 유튜브 원본 내려받기 (yt-dlp 가 있는 환경: 프로그램 버전 · 자체 호스팅). 실제 렌더링·프레임 추출·음원 분리에 사용
+export async function downloadYoutube(videoId, outDir, { maxHeight = 1080 } = {}) {
+  if (!which('yt-dlp')) return null;
+  fs.mkdirSync(outDir, { recursive: true });
+  const out = path.join(outDir, `${videoId}.mp4`);
+  if (fs.existsSync(out) && fs.statSync(out).size > 0) return out;
+  await run('yt-dlp', ['-f', `bv*[height<=${maxHeight}][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b`, '--merge-output-format', 'mp4', '--no-playlist', '--no-warnings', '-o', out, `https://www.youtube.com/watch?v=${videoId}`]);
+  return fs.existsSync(out) ? out : null;
+}
+
+// 음원 분리 (demucs 가 있으면 목소리만 남긴 wav 를 돌려준다 → 효과음·배경음 실제 제거)
+export async function separateVocals(input, outDir) {
+  if (!which('demucs') || !input || !fs.existsSync(input)) return null;
+  try {
+    fs.mkdirSync(outDir, { recursive: true });
+    await run('demucs', ['--two-stems=vocals', '-n', 'htdemucs', '-o', outDir, input]);
+    const base = path.parse(input).name;
+    const found = walk(outDir).find((f) => f.endsWith(`${path.sep}${base}${path.sep}vocals.wav`));
+    return found || null;
+  } catch (err) { console.warn('[media] demucs 실패:', err.message); return null; }
+}
+function walk(dir) { let out = []; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) out = out.concat(walk(p)); else out.push(p); } return out; }
+
 export async function probe(filePath) {
   if (!fs.existsSync(filePath)) throw new ApiError(404, '비디오 파일을 로드할 수 없습니다.');
   if (which('ffprobe')) {
@@ -132,19 +169,28 @@ export async function fetchYoutubeMeta(videoId) {
 }
 
 // 실제 클립 렌더링 (프로그램 버전/ffmpeg 설치 환경). ffmpeg 이 없으면 렌더 계획(JSON)만 남긴다.
-export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1, outro = null }) {
+// hookAudio: 첫 3초 AI 후킹 보이스 파일(있으면 앞에 섞고 원본은 덕킹) · vocalsPath: demucs 로 분리한 목소리 트랙(있으면 원본 오디오 대신 사용)
+export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1, outro = null, hookAudio = null, vocalsPath = null }) {
   const dims = ratio === '9:16' ? '1080:1920' : ratio === '1:1' ? '1080:1080' : ratio === '4:5' ? '1080:1350' : '1920:1080';
   const [w, h] = dims.split(':');
   const filters = [`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'setsar=1'];
   if (subtitlePath) filters.push(`subtitles='${subtitlePath.replace(/'/g, "\\'")}'`);
   if (speedUp !== 1) filters.push(`setpts=PTS/${speedUp}`);
   let args;
-  if (outro && outro.durationSec > 0) {
+  const useVocals = vocalsPath && fs.existsSync(vocalsPath);
+  const useHook = hookAudio && fs.existsSync(hookAudio);
+  if (outro && outro.durationSec > 0 || useVocals || useHook) {
+    if (!(outro && outro.durationSec > 0)) outro = { text: '', durationSec: 0 };
     // 마무리 구독 카드: 클립 뒤에 CTA 카드(검정 배경 + 큰 글씨 + 무음)를 이어 붙인다
     const text = String(outro.text || '구독 · 좋아요 · 알림 설정').replace(/[\\':]/g, ' ');
-    const d = outro.durationSec;
-    const fc = `[0:v]${filters.join(',')}[v0];[0:a]asetpts=PTS-STARTPTS[a0];color=c=0x111111:s=${w}x${h}:d=${d}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(Number(h) / 16)}:x=(w-text_w)/2:y=(h-text_h)/2,drawbox=x=(iw-${Math.round(Number(w) * 0.4)})/2:y=ih*0.62:w=${Math.round(Number(w) * 0.4)}:h=${Math.round(Number(h) / 14)}:color=0xff0033@1:t=fill,drawtext=text='구독':fontcolor=white:fontsize=${Math.round(Number(h) / 24)}:x=(w-text_w)/2:y=h*0.62+${Math.round(Number(h) / 60)}[v1];anullsrc=r=48000:cl=stereo,atrim=0:${d},asetpts=PTS-STARTPTS[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[vo][ao]`;
-    args = ['-y', '-ss', String(start), '-to', String(end), '-i', input, '-filter_complex', fc, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', output];
+    const d = Math.max(0.1, outro.durationSec || 0.1);
+    const inputs = ['-ss', String(start), '-to', String(end), '-i', input];
+    let audioSrc = '[0:a]asetpts=PTS-STARTPTS[a0]';
+    let idx = 1;
+    if (useVocals) { inputs.push('-ss', String(start), '-to', String(end), '-i', vocalsPath); audioSrc = `[${idx}:a]asetpts=PTS-STARTPTS[a0]`; idx += 1; }
+    if (useHook) { inputs.push('-i', hookAudio); audioSrc = `${audioSrc.replace('[a0]', '[abase]')};[${idx}:a]asetpts=PTS-STARTPTS[ahook];[abase][ahook]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=300[aduck];[aduck][ahook]amix=inputs=2:duration=first:dropout_transition=0[a0]`; idx += 1; }
+    const fc = `[0:v]${filters.join(',')}[v0];${audioSrc};color=c=0x111111:s=${w}x${h}:d=${d}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(Number(h) / 16)}:x=(w-text_w)/2:y=(h-text_h)/2,drawbox=x=(iw-${Math.round(Number(w) * 0.4)})/2:y=ih*0.62:w=${Math.round(Number(w) * 0.4)}:h=${Math.round(Number(h) / 14)}:color=0xff0033@1:t=fill,drawtext=text='구독':fontcolor=white:fontsize=${Math.round(Number(h) / 24)}:x=(w-text_w)/2:y=h*0.62+${Math.round(Number(h) / 60)}[v1];anullsrc=r=48000:cl=stereo,atrim=0:${d},asetpts=PTS-STARTPTS[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[vo][ao]`;
+    args = ['-y', ...inputs, '-filter_complex', fc, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', output];
   } else {
     args = ['-y', '-ss', String(start), '-to', String(end), '-i', input, '-vf', filters.join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', output];
   }

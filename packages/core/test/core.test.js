@@ -5,6 +5,7 @@ import { AlphaMan, ADMIN_ACCOUNT, validateVideoMeta, parseYoutubeUrl, toSRT, toV
 process.env.ALPHAMAN_AI = 'off';
 process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
+process.env.ALPHAMAN_TTS_DETECT = 'off'; // 테스트에서는 네트워크 TTS 탐색 생략
 
 function app() { return new AlphaMan({ memory: true, platform: 'test' }); }
 function waitFor(fn, ms = 4000) {
@@ -407,7 +408,7 @@ test('무료 한국어 TTS 목소리: 목록·합성(브라우저/edge)·샘플 
   assert.ok(voices.filter((v) => v.lang === 'ko-KR').length >= 18, '한국어 목소리(기본 + 스타일 변형)가 충분히 많아야 한다');
   assert.ok(voices.some((v) => v.gender === 'male') && voices.some((v) => v.gender === 'female'));
   const r = await a.voice.synthesize(user.id, { voiceId: 'ko-hyunsu', text: '아직도 이거 모르셨어요?', style: 'hook' });
-  assert.equal(r.voiceId, 'ko-hyunsu'); assert.ok(['browser', 'edge-tts'].includes(r.engine));
+  assert.equal(r.voiceId, 'ko-hyunsu'); assert.ok(['browser', 'edge-tts', 'edge', 'google'].includes(r.engine));
   if (r.engine === 'browser') assert.equal(r.browser.lang, 'ko-KR');
   assert.throws(() => a.voice.sampleFile(user.id, 'nope'), /찾을 수 없습니다/);
   const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
@@ -495,4 +496,19 @@ test('서버리스 로그인: 가입 직후 다른 인스턴스에 사용자 레
   // 위조된 토큰은 여전히 거부
   assert.equal(b.auth.userFromToken(`${token.split('.')[0]}.bad`), null);
   a.close(); b.close();
+});
+
+test('저장소 병합: 서로 다른 인스턴스의 변경이 덮어써지지 않고 합쳐지며 삭제 기록이 우선한다', async () => {
+  const { mergeSnapshots } = await import('../src/store.js');
+  const t0 = '2026-01-01T00:00:00.000Z'; const t1 = '2026-01-01T00:01:00.000Z'; const t2 = '2026-01-01T00:02:00.000Z';
+  const remote = { users: [{ id: 'a', name: 'A-old', updatedAt: t0 }, { id: 'b', name: 'B', updatedAt: t0 }], voiceProfiles: [{ id: 'v1', name: '내 목소리', updatedAt: t1 }], tombstones: [] };
+  const local = { users: [{ id: 'a', name: 'A-new', updatedAt: t2 }, { id: 'c', name: 'C', updatedAt: t1 }], voiceProfiles: [], tombstones: [{ collection: 'users', id: 'b', at: t2 }] };
+  const m = mergeSnapshots(remote, local);
+  assert.deepEqual(m.users.map((u) => u.id).sort(), ['a', 'c']);
+  assert.equal(m.users.find((u) => u.id === 'a').name, 'A-new');
+  assert.equal(m.voiceProfiles.length, 1, '다른 인스턴스가 만든 음성 프로필이 사라지면 안 된다');
+  assert.equal(m.tombstones.length, 1);
+  // 삭제보다 나중에 갱신된 레코드는 살아남는다
+  const m2 = mergeSnapshots({ users: [{ id: 'b', updatedAt: '2026-01-01T00:03:00.000Z' }], tombstones: [] }, local);
+  assert.equal(m2.users.some((u) => u.id === 'b'), true);
 });

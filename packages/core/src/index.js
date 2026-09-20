@@ -61,6 +61,8 @@ export class AlphaMan {
 
     this.auth.seedAdmin();
     this.publish.start();
+    // 무료 TTS 엔진(네트워크) 탐색은 백그라운드로 (테스트에서는 생략)
+    if (platform !== 'test' && process.env.ALPHAMAN_TTS_DETECT !== 'off') this.voice.detectFreeEngines().catch(() => {});
   }
 
   async info() {
@@ -91,7 +93,7 @@ export class AlphaMan {
 export { ADMIN_ACCOUNT, PLANS, ADDON_PLANS, PLATFORMS, LOCALES, CONTENT };
 export { ADMIN_USER_ID, verifySessionToken } from './auth.js';
 export { ApiError } from './errors.js';
-export { validateVideoMeta, parseYoutubeUrl, parseVideoUrl } from './media.js';
+export { validateVideoMeta, parseYoutubeUrl, parseVideoUrl, ensureLocalFile, downloadYoutube } from './media.js';
 export { TEMPLATES, GENRES, RATIOS } from './shorts/templates.js';
 export { FONTS, SUBTITLE_STYLE_PRESETS } from './subtitles/fonts.js';
 export { exportSubtitles, parseSRT, toSRT, toVTT, toASS } from './subtitles/format.js';

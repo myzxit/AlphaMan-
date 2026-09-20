@@ -2,7 +2,7 @@
 // → 결과 확인/편집/재생성/내보내기. 이용권은 원본 길이(분)만큼 차감, 재생성은 절반.
 import path from 'node:path';
 import { ApiError } from '../errors.js';
-import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, renderClip } from '../media.js';
+import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, renderClip, ensureLocalFile, downloadYoutube, separateVocals, which } from '../media.js';
 import { transcribe, semanticSplit } from '../subtitles/stt.js';
 import { toASS, exportSubtitles } from '../subtitles/format.js';
 import { TEMPLATES, GENRES, RATIOS, detectGenre, templateFor } from './templates.js';
@@ -57,10 +57,11 @@ export class ShortsEngine {
   async createFromUpload(userId, { uploadId, options = {}, transcript = null, transcriptText = '' }) {
     const upload = this.store.get('uploads', uploadId);
     if (!upload || upload.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+    await ensureLocalFile(upload);
     const meta = await probe(upload.path);
     validateVideoMeta({ filename: upload.filename, mimeType: upload.mimeType, ...meta });
     return this._create(userId, {
-      source: { type: 'file', uploadId, path: upload.path, title: path.parse(upload.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height, thumbnail: null },
+      source: { type: 'file', uploadId, path: upload.path, remoteUrl: upload.remoteUrl || null, title: path.parse(upload.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height, thumbnail: null },
       options: withTranscript(options, transcript, transcriptText),
     });
   }
@@ -96,6 +97,11 @@ export class ShortsEngine {
     if (!job) return;
     const { source, options } = job;
     this._log(jobId, 'downloading', 8, source.type === 'youtube' ? '유튜브 영상을 가져오는 중' : '업로드 파일을 준비하는 중');
+    // 프로그램 버전·자체 호스팅(yt-dlp 있음): 유튜브 원본을 실제로 내려받아 렌더링·썸네일·음원 분리에 사용
+    if (!source.path && source.videoId && which('yt-dlp')) {
+      try { const p = await downloadYoutube(source.videoId, path.join(this.outputDir, job.userId, 'src')); if (p) { source.path = p; this.store.update('jobs', jobId, { source }); } }
+      catch (err) { this._log(jobId, 'downloading', 10, `유튜브 원본 다운로드 실패 (미리보기만 제공): ${err.message}`); }
+    } else if (source.path) await ensureLocalFile(source);
     await this._wait(400);
     this._log(jobId, 'transcribing', 25, '음성을 인식해 대본을 만드는 중 (Whisper)');
     const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: options.language, title: source.title, source, transcript: options.transcript || null, transcriptText: options.transcriptText || '' });
@@ -253,7 +259,12 @@ export class ShortsEngine {
     const out = path.join(this.outputDir, job.userId, `${clip.id}.mp4`);
     let result = { rendered: false, plan: null };
     if (job.source.path) {
-      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio, outro: clip.outro || null });
+      await ensureLocalFile(job.source);
+      // 음성 향상(배경음악 제거)이 켜져 있고 demucs 가 있으면 목소리 트랙만 남긴다
+      let vocalsPath = null;
+      if (clip.audio?.voiceEnhance?.removeMusic && which('demucs')) { vocalsPath = job.vocalsPath || await separateVocals(job.source.path, path.join(this.outputDir, job.userId, 'stems')); if (vocalsPath) this.store.update('jobs', job.id, { vocalsPath }); }
+      const hookAudio = clip.audio?.aiHookVoice?.audioPath || null;
+      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio, outro: clip.outro || null, hookAudio, vocalsPath });
     } else {
       result = { rendered: false, plan: { note: '유튜브 원본은 yt-dlp 로 내려받은 뒤 렌더링됩니다.', ratio: clip.ratio, start: clip.start, end: clip.end } };
     }

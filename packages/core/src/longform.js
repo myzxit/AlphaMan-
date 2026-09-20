@@ -1,6 +1,6 @@
 // 롱폼 컷편집: 롱폼 영상 전체에 무음 구간 제거 + 자동 자막 + 챕터 생성 (알파컷 "서비스 > 롱폼 컷편집")
 import { ApiError } from './errors.js';
-import { parseYoutubeUrl, fetchYoutubeMeta, probe } from './media.js';
+import { parseYoutubeUrl, fetchYoutubeMeta, probe, ensureLocalFile } from './media.js';
 import { transcribe, semanticSplit } from './subtitles/stt.js';
 
 export class LongformEngine {
@@ -16,8 +16,9 @@ export class LongformEngine {
     if (uploadId) {
       const up = this.store.get('uploads', uploadId);
       if (!up || up.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+      await ensureLocalFile(up);
       const meta = await probe(up.path);
-      source = { type: 'file', uploadId, path: up.path, title: up.filename, durationSec: meta.durationSec };
+      source = { type: 'file', uploadId, path: up.path, remoteUrl: up.remoteUrl || null, title: up.filename, durationSec: meta.durationSec };
     } else {
       const yt = parseYoutubeUrl(url);
       const meta = await fetchYoutubeMeta(yt.id);

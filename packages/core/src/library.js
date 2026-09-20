@@ -141,7 +141,9 @@ export class LibraryService {
         renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : null,
         source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map(sub), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
         zoomKeyframes: clip.zoomKeyframes || [], templateId: clip.templateId, transcriptExact: job.transcriptExact ?? null, thumbnail: clip.thumbnail || job.source.thumbnail || null,
-        outro: clip.outro || null, seo: clip.seo || null, thumbnailSet: clip.thumbnailSet ? { ...clip.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/shorts/${clip.id}/image.svg?v=${encodeURIComponent(clip.thumbnailSet.updatedAt)}` } : null,
+        outro: clip.outro || null, seo: clip.seo || null, cropBottom: 0,
+        audio: { muteOriginal: false, duckOriginal: true, cues: clip.audio?.aiHookVoice ? [cue(clip.audio.aiHookVoice, 0, this.store)] : [] },
+        thumbnailSet: clip.thumbnailSet ? { ...clip.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/shorts/${clip.id}/image.svg?v=${encodeURIComponent(clip.thumbnailSet.updatedAt)}` } : null,
       };
     }
     if (kind === 'remix') {
@@ -155,6 +157,9 @@ export class LibraryService {
         source: sourceSpec(job.source), items: (r.timeline || []).map((t) => ({ kind: t.kind, start: t.start, end: t.end, speed: t.speed || 1, title: t.title || null, newStart: t.newStart, newEnd: t.newEnd, section: t.section || null, cta: Boolean(t.cta), channel: t.channel || null })),
         subtitles: (r.subtitles || []).filter((s) => !s.card).map(sub), hook: r.plan?.hook ? { text: r.plan.hook, durationSec: r.styleProfile?.hookDurationSec || 3 } : null,
         sfx: r.sfx || [], narration: r.narration?.lines || [], templateId: r.template?.id || null, transcriptExact: r.transcriptExact ?? null, thumbnail: job.source.thumbnail || null,
+        // 미리보기에서 원본 박힌 자막이 보이지 않도록 하단을 잘라내고(렌더 계획과 동일), 내레이션 TTS 를 시점에 맞춰 재생. 전체 더빙이면 원본 소리를 끈다
+        cropBottom: (r.cleaning?.steps || []).some((st) => st.id === 'burned-subtitles') ? 0.22 : 0,
+        audio: { muteOriginal: Boolean(r.narration?.replacesOriginalVoice), duckOriginal: true, cues: (r.narration?.lines || []).map((l) => cue(l, l.at, this.store)) },
         seo: r.seo || null, thumbnailSet: job.thumbnailSet ? { ...job.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/remix/${job.id}/image.svg?v=${encodeURIComponent(job.thumbnailSet.updatedAt)}` } : null,
       };
     }
@@ -177,6 +182,12 @@ export class LibraryService {
   }
 }
 
+// TTS 큐: 실제 파일이 있으면 스트리밍 URL, 없으면 브라우저 내장 음성 정보
+function cue(rec, at, store) {
+  const r = rec.renderId ? store.get('voiceRenders', rec.renderId) : (rec.id && store.get('voiceRenders', rec.id)) || rec;
+  const hasFile = Boolean(r && (r.audioUrl || (r.audioPath && fs.existsSync(r.audioPath))));
+  return { at: round(at), text: rec.text || r?.text || '', engine: r?.engine || rec.engine || 'browser', url: hasFile ? `/api/voice/renders/${r.id}/audio` : null, browser: r?.browser || rec.browser || null, durationSec: r?.durationSec || rec.durationSec || null };
+}
 function sourceSpec(source = {}) {
   if (source.videoId && (source.type === 'youtube' || source.platform === 'youtube')) return { type: 'youtube', videoId: source.videoId, url: source.url || null, title: source.title || '' };
   if (source.uploadId) return { type: 'upload', uploadId: source.uploadId, streamUrl: `/api/uploads/${source.uploadId}/stream`, title: source.title || '' };

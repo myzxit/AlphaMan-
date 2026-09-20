@@ -4,6 +4,13 @@
 import { get, downloadUrl, getToken } from './api.js';
 import { esc, modal, fmtTime, toast } from './ui.js';
 
+// 방금 만들어진 작업은 다른 서버 인스턴스에 아직 동기화되지 않았을 수 있어 404 를 잠깐 재시도한다
+export async function getWithRetry(path, { tries = 4, delayMs = 800 } = {}) {
+  let last;
+  for (let i = 0; i < tries; i++) { try { return await get(path); } catch (err) { last = err; if (err.status !== 404 && err.status !== 409) throw err; await new Promise((r) => setTimeout(r, delayMs * (i + 1))); } }
+  throw last;
+}
+
 let ytApi = null;
 function loadYoutubeApi() {
   if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
@@ -48,6 +55,26 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
   const total = spec.durationSec || (items.length ? items[items.length - 1].newEnd : 0) || 1;
   let media = null; let outT = 0; let playing = false; let raf = null; let cur = -1; let cardStartedAt = 0; let cardElapsed = 0; let lastTick = 0; let muted = false; let destroyed = false;
   const direct = spec.rendered && spec.renderUrl; // 렌더된 MP4 를 바로 재생
+  // TTS 큐(후킹 보이스 · 내레이션): 렌더된 MP4 에는 이미 섞여 있으므로 미리보기(타임라인) 모드에서만 재생
+  const cues = direct ? [] : ((spec.audio && spec.audio.cues) || []).map((c) => ({ ...c, played: false }));
+  const muteOriginal = !direct && Boolean(spec.audio && spec.audio.muteOriginal);
+  const duck = !direct && (spec.audio ? spec.audio.duckOriginal !== false : true);
+  let cueAudio = null; let cueActive = 0; let originalOff = muteOriginal;
+  const applyMute = () => { if (media) media.mute(muted || originalOff || (duck && cueActive > 0)); };
+  const stopCues = () => { if (cueAudio) { try { cueAudio.pause(); } catch { /* ignore */ } cueAudio = null; } if (window.speechSynthesis) window.speechSynthesis.cancel(); cueActive = 0; applyMute(); };
+  const playCue = (c) => {
+    c.played = true; cueActive += 1; applyMute();
+    const done = () => { cueActive = Math.max(0, cueActive - 1); applyMute(); };
+    if (c.url) { const a = new Audio(downloadUrl(c.url)); cueAudio = a; a.onended = done; a.onerror = () => { done(); speak(c); }; a.play().catch(() => { done(); speak(c); }); }
+    else speak(c, done);
+    function speak(cue, cb = done) {
+      if (!window.speechSynthesis || !cue.text) return cb();
+      const u = new SpeechSynthesisUtterance(cue.text); const b = cue.browser || {}; u.lang = b.lang || 'ko-KR'; u.rate = b.rate || 1; u.pitch = b.pitch || 1;
+      const voices = window.speechSynthesis.getVoices(); const hit = voices.find((v) => (b.voiceHint || []).some((h) => v.name.toLowerCase().includes(String(h).toLowerCase())) && v.lang.toLowerCase().startsWith(u.lang.slice(0, 2).toLowerCase())) || voices.find((v) => v.lang.toLowerCase().startsWith(u.lang.slice(0, 2).toLowerCase()));
+      if (hit) u.voice = hit; u.onend = cb; u.onerror = cb; window.speechSynthesis.speak(u);
+    }
+  };
+  const resetCues = (t) => { stopCues(); for (const c of cues) c.played = c.at < t - 0.3; };
 
   try {
     if (direct) {
@@ -67,6 +94,11 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
     await media.ready;
   } catch (err) { loading.textContent = err.message; loading.classList.add('error'); return { destroy() {} }; }
   loading.classList.add('hidden');
+  // 원본에 박힌 자막 제거(미리보기): 렌더 계획과 같이 화면 아래쪽을 잘라낸다
+  if (!direct && spec.cropBottom > 0) { mediaHost.classList.add('cropped'); mediaHost.style.setProperty('--crop', String(spec.cropBottom)); }
+  if (cues.length || muteOriginal) note.textContent += ` · TTS ${cues.length}개 재생${muteOriginal ? ' · 원본 소리 끔(전체 내레이션)' : duck ? ' · TTS 중 원본 소리 줄임' : ''}`;
+  if (muteOriginal) { const b = document.createElement('button'); b.className = 'btn btn-sm player-orig'; b.textContent = '원본 소리 켜기'; b.onclick = () => { originalOff = !originalOff; b.textContent = originalOff ? '원본 소리 켜기' : '원본 소리 끄기'; applyMute(); }; root.querySelector('.player-bar').appendChild(b); }
+  applyMute();
 
   const itemAt = (t) => { let i = items.findIndex((it) => t >= it.newStart && t < it.newEnd); if (i < 0 && items.length && t >= items[items.length - 1].newEnd) i = items.length - 1; return i; };
   const enter = (i, t) => {
@@ -86,6 +118,7 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
     const hookOn = spec.hook && t < (spec.hook.durationSec || 3);
     hookEl.classList.toggle('hidden', !hookOn); if (hookOn) hookEl.textContent = `🔥 ${spec.hook.text}`;
     fill.style.width = `${Math.min(100, (t / total) * 100)}%`; timeEl.textContent = `${fmtTime(t)} / ${fmtTime(total)}`;
+    if (playing) for (const c of cues) if (!c.played && t >= c.at && t < c.at + 4) playCue(c);
   };
   const tick = () => {
     if (destroyed) return;
@@ -99,17 +132,17 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
     if (playing) raf = requestAnimationFrame(tick);
   };
   const play = () => { playing = true; playBtn.textContent = '⏸'; if (direct) media.play(); else { if (cur < 0) enter(itemAt(outT) < 0 ? 0 : itemAt(outT), outT); const it = items[cur]; if (it?.kind === 'card') { cardStartedAt = performance.now(); } else media.play(); } cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
-  const pause = () => { playing = false; playBtn.textContent = '▶'; media.pause(); const it = items[cur]; if (it?.kind === 'card') cardElapsed = outT - it.newStart; cancelAnimationFrame(raf); drawOverlays(outT); };
+  const pause = () => { playing = false; playBtn.textContent = '▶'; media.pause(); stopCues(); const it = items[cur]; if (it?.kind === 'card') cardElapsed = outT - it.newStart; cancelAnimationFrame(raf); drawOverlays(outT); };
   const stop = () => { pause(); outT = direct ? media.time() : total; drawOverlays(outT); };
-  const seekTo = (t) => { outT = Math.max(0, Math.min(total, t)); if (direct) { media.seek(outT); drawOverlays(outT); return; } const i = Math.max(0, itemAt(outT)); enter(i, outT); if (!playing) media.pause(); drawOverlays(outT); };
+  const seekTo = (t) => { outT = Math.max(0, Math.min(total, t)); resetCues(outT); if (direct) { media.seek(outT); drawOverlays(outT); return; } const i = Math.max(0, itemAt(outT)); enter(i, outT); if (!playing) media.pause(); drawOverlays(outT); };
   playBtn.onclick = () => (playing ? pause() : play());
   root.querySelector('.player-progress').onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); seekTo(((e.clientX - r.left) / r.width) * total); };
-  root.querySelector('.player-mute').onclick = (e) => { muted = !muted; media.mute(muted); e.target.textContent = muted ? '🔇' : '🔊'; };
+  root.querySelector('.player-mute').onclick = (e) => { muted = !muted; applyMute(); e.target.textContent = muted ? '🔇' : '🔊'; };
   root.querySelector('.player-stage').onclick = (e) => { if (e.target.closest('.player-bar')) return; playing ? pause() : play(); };
   if (!direct) { enter(0, 0); media.pause(); }
   drawOverlays(0);
   if (autoplay) play();
-  return { play, pause, seekTo, destroy() { destroyed = true; cancelAnimationFrame(raf); try { media.destroy(); } catch { /* ignore */ } } };
+  return { play, pause, seekTo, destroy() { destroyed = true; cancelAnimationFrame(raf); stopCues(); try { media.destroy(); } catch { /* ignore */ } } };
 }
 
 // 인증이 필요한 스트림 URL: 프로그램/웹 모두 Bearer 토큰을 쿠키로도 보내므로 <video src> 에 그대로 쓸 수 있게 토큰 쿠키를 심는다
@@ -123,8 +156,8 @@ async function authedUrl(url) {
 export async function openPreview(specOrRef, { title = '미리보기' } = {}) {
   let spec = specOrRef;
   try {
-    if (specOrRef.libraryId) spec = (await get(`/api/library/${specOrRef.libraryId}`)).preview;
-    else if (specOrRef.refId && !specOrRef.items) spec = await get(`/api/preview/${specOrRef.kind}/${specOrRef.refId}`);
+    if (specOrRef.libraryId) spec = (await getWithRetry(`/api/library/${specOrRef.libraryId}`)).preview;
+    else if (specOrRef.refId && !specOrRef.items) spec = await getWithRetry(`/api/preview/${specOrRef.kind}/${specOrRef.refId}`);
   } catch (err) { toast(err.message, 'error', 6000); return null; }
   let player = null;
   const m = modal('<div class="player-host"></div>', { title: spec.title || title, wide: true, onClose: () => player && player.destroy() });

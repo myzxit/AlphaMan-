@@ -3,7 +3,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ApiError } from './errors.js';
-import { probe, which, run } from './media.js';
+import { probe, which, run, ensureLocalFile } from './media.js';
+import { edgeSynthesize, edgeTtsAvailable } from './edgetts.js';
+import { googleSynthesize, googleTtsAvailable } from './freetts.js';
 
 const MIN_SAMPLE_SEC = 5;
 const MAX_SAMPLE_SEC = 600;
@@ -62,12 +64,22 @@ export class VoiceService {
       elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY),
       xtts: Boolean(which('tts')),
       edge: Boolean(which('edge-tts')),
+      edgeNode: this._edgeNode === true,   // Node 내장 Edge TTS (네트워크 허용 시)
+      google: this._google === true,       // Google 번역 읽어주기 (네트워크 허용 시, 언어당 1 목소리)
       browser: true, // 브라우저 내장 음성(Web Speech API) - 항상 무료
       ffmpeg: Boolean(which('ffmpeg')),
     };
   }
 
-  freeVoices() { return FREE_VOICES.map((v) => ({ ...v, engine: which('edge-tts') ? 'edge-tts' : 'browser' })); }
+  _freeEngine() { return which('edge-tts') ? 'edge-tts' : this._edgeNode ? 'edge' : this._google ? 'google' : 'browser'; }
+  freeVoices() { return FREE_VOICES.map((v) => ({ ...v, engine: this._freeEngine() })); }
+  // 실제 음성 파일을 만들 수 있는 무료 엔진을 한 번 탐색해 둔다 (서버 시작 시 백그라운드)
+  async detectFreeEngines() {
+    if (this._detected) return { edgeNode: this._edgeNode, google: this._google };
+    this._detected = true;
+    [this._edgeNode, this._google] = await Promise.all([edgeTtsAvailable().catch(() => false), googleTtsAvailable().catch(() => false)]);
+    return { edgeNode: this._edgeNode, google: this._google };
+  }
   freeVoice(id) { return FREE_VOICES.find((v) => v.id === id) || null; }
 
   // 등록한 내 목소리 샘플 파일 (들어보기용)
@@ -84,7 +96,7 @@ export class VoiceService {
   resolve(userId, { voiceProfileId = null, voiceId = null } = {}) {
     if (voiceProfileId) { const p = this.get(userId, voiceProfileId); return { kind: 'profile', id: p.id, label: `${p.name} (내 목소리)`, engine: p.engine }; }
     const fv = this.freeVoice(voiceId) || this.freeVoice(DEFAULT_FREE_VOICE);
-    return { kind: 'free', id: fv.id, label: `${fv.name} (무료 · ${fv.tone})`, engine: which('edge-tts') ? 'edge-tts' : 'browser' };
+    return { kind: 'free', id: fv.id, label: `${fv.name} (무료 · ${fv.tone})`, engine: this._freeEngine() };
   }
 
   list(userId) {
@@ -104,6 +116,7 @@ export class VoiceService {
     if (uploadId) {
       const up = this.store.get('uploads', uploadId);
       if (!up || up.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+      await ensureLocalFile(up);
       samplePath = up.path; filename = up.filename;
     } else if (localPath) {
       samplePath = localPath; filename = path.basename(localPath);
@@ -158,16 +171,30 @@ export class VoiceService {
       // 무료 목소리
       const fv = this.freeVoice(voiceId) || this.freeVoice(DEFAULT_FREE_VOICE);
       const base = { profileId: null, voiceId: fv.id, voiceName: fv.name, text: clean, style: st.id, estimatedSec };
+      const speed = st.speed * (fv.rate || 1); const pitchN = st.pitch + (fv.pitch || 0);
+      const rate = `${speed >= 1 ? '+' : ''}${Math.round((speed - 1) * 100)}%`; const pitch = `${pitchN >= 0 ? '+' : ''}${pitchN * 2}Hz`;
+      const browser = { lang: fv.lang || 'ko-KR', voiceHint: fv.browserHint, gender: fv.gender, rate: speed, pitch: 1 + pitchN * 0.08 };
+      // ① edge-tts CLI ② Node 내장 Edge TTS ③ Google 번역 읽어주기 ④ 브라우저 음성 — 앞에서부터 되는 것을 쓴다
       if (which('edge-tts')) {
-        try {
-          fs.mkdirSync(dir, { recursive: true });
-          const speed = st.speed * (fv.rate || 1); const pitchN = st.pitch + (fv.pitch || 0);
-          const rate = `${speed >= 1 ? '+' : ''}${Math.round((speed - 1) * 100)}%`; const pitch = `${pitchN >= 0 ? '+' : ''}${pitchN * 2}Hz`;
-          await run('edge-tts', ['--voice', fv.edge, '--rate', rate, '--pitch', pitch, '--text', clean, '--write-media', out]);
-          return this._record(userId, { ...base, engine: 'edge-tts', audioPath: out, durationSec: estimatedSec });
-        } catch (err) { console.warn('[voice] edge-tts 합성 실패, 브라우저 음성으로:', err.message); }
+        try { fs.mkdirSync(dir, { recursive: true }); await run('edge-tts', ['--voice', fv.edge, '--rate', rate, '--pitch', pitch, '--text', clean, '--write-media', out]); return this._record(userId, { ...base, engine: 'edge-tts', audioPath: out, durationSec: estimatedSec, browser }); }
+        catch (err) { console.warn('[voice] edge-tts CLI 실패:', err.message); }
       }
-      return this._record(userId, { ...base, engine: 'browser', audioPath: null, durationSec: estimatedSec, browser: { lang: fv.lang || 'ko-KR', voiceHint: fv.browserHint, gender: fv.gender, rate: st.speed * (fv.rate || 1), pitch: 1 + (st.pitch + (fv.pitch || 0)) * 0.08 }, plan: { note: '브라우저 내장 음성으로 재생됩니다. 서버에 edge-tts 를 설치하면 MP3 파일도 생성됩니다.' } });
+      if (!this._detected && process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.detectFreeEngines().catch(() => {});
+      if (this._edgeNode) {
+        try { const mp3 = await edgeSynthesize({ text: clean, voice: fv.edge, rate, pitch }); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(out, mp3); return this._record(userId, { ...base, engine: 'edge', audioPath: out, durationSec: estimatedSec, browser }); }
+        catch (err) { console.warn('[voice] Edge TTS 실패:', err.message); this._edgeNode = false; }
+      }
+      if (this._google) {
+        try {
+          const mp3 = await googleSynthesize({ text: clean, lang: (fv.lang || 'ko-KR').split('-')[0] });
+          fs.mkdirSync(dir, { recursive: true });
+          let finalPath = out.replace(/\.mp3$/, '.g.mp3'); fs.writeFileSync(finalPath, mp3);
+          // 속도/높낮이 프리셋은 ffmpeg 이 있으면 적용
+          if (which('ffmpeg') && (Math.abs(speed - 1) > 0.02 || pitchN !== 0)) { try { await run('ffmpeg', ['-y', '-i', finalPath, '-filter:a', `atempo=${Math.min(2, Math.max(0.5, speed))}${pitchN ? `,asetrate=24000*${(1 + pitchN * 0.03).toFixed(3)},aresample=24000` : ''}`, out]); finalPath = out; } catch { /* 원본 유지 */ } }
+          return this._record(userId, { ...base, engine: 'google', audioPath: finalPath, durationSec: estimatedSec, browser, plan: { note: `Google 읽어주기 음성(${fv.lang || 'ko-KR'})으로 만든 MP3 입니다. 목소리 성격(${fv.name})은 브라우저 재생/edge-tts 에서 더 정확히 반영됩니다.` } });
+        } catch (err) { console.warn('[voice] Google TTS 실패:', err.message); this._google = false; }
+      }
+      return this._record(userId, { ...base, engine: 'browser', audioPath: null, durationSec: estimatedSec, browser, plan: { note: '브라우저 내장 음성으로 재생됩니다. 서버가 인터넷에 연결되어 있거나 edge-tts 를 설치하면 MP3 파일도 생성됩니다.' } });
     }
     const profile = this.get(userId, profileId);
     const base = { profileId, text: clean, style: st.id, estimatedSec, engine: profile.engine };
@@ -189,7 +216,25 @@ export class VoiceService {
   }
 
   _record(userId, data) {
-    return this.store.insert('voiceRenders', { userId, ...data });
+    const rec = this.store.insert('voiceRenders', { userId, ...data });
+    // 서버리스: 음성 파일을 원격 저장소에도 올려 다른 인스턴스·재배포 후에도 재생되게 한다 (백그라운드)
+    if (rec.audioPath && this.store.remote?.putFile && fs.existsSync(rec.audioPath)) {
+      this._uploading = (this._uploading || Promise.resolve()).then(async () => {
+        try { const url = await this.store.remote.putFile(`voice/${userId}/${rec.id}${path.extname(rec.audioPath)}`, fs.readFileSync(rec.audioPath), rec.audioPath.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg'); this.store.update('voiceRenders', rec.id, { audioUrl: url }); rec.audioUrl = url; }
+        catch (err) { console.warn('[voice] 음성 파일 원격 저장 실패:', err.message); }
+      });
+    }
+    return rec;
+  }
+  async flushUploads() { if (this._uploading) await this._uploading; }
+
+  // 합성 결과 파일 (없으면 원격 URL 로 리다이렉트)
+  renderFile(userId, id) {
+    const rec = this.store.get('voiceRenders', id);
+    if (!rec || rec.userId !== userId) throw new ApiError(404, '음성을 찾을 수 없습니다.');
+    if (rec.audioPath && fs.existsSync(rec.audioPath)) return { path: rec.audioPath, mime: rec.audioPath.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg', filename: path.basename(rec.audioPath) };
+    if (rec.audioUrl) return { redirect: rec.audioUrl };
+    throw new ApiError(404, rec.engine === 'browser' ? '이 음성은 브라우저 내장 음성으로 재생됩니다 (파일 없음).' : '아직 실제 음성 파일이 생성되지 않았습니다.');
   }
 
   renders(userId) { return this.store.find('voiceRenders', (r) => r.userId === userId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50); }

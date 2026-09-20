@@ -5,7 +5,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { ApiError } from './errors.js';
-import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run } from './media.js';
+import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run, ensureLocalFile, downloadYoutube, separateVocals } from './media.js';
 import { transcribe, semanticSplit } from './subtitles/stt.js';
 import { toASS } from './subtitles/format.js';
 import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
@@ -62,9 +62,10 @@ export class RemixEngine {
     if (uploadId) {
       const up = this.store.get('uploads', uploadId);
       if (!up || up.userId !== userId) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+      await ensureLocalFile(up);
       const meta = await probe(up.path);
       validateVideoMeta({ filename: up.filename, mimeType: up.mimeType, ...meta });
-      source = { type: 'file', uploadId, path: up.path, title: path.parse(up.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height };
+      source = { type: 'file', uploadId, path: up.path, remoteUrl: up.remoteUrl || null, title: path.parse(up.filename).name, durationSec: meta.durationSec, width: meta.width, height: meta.height };
     } else if (localPath) {
       const meta = await probe(localPath);
       validateVideoMeta({ filename: path.basename(localPath), ...meta });
@@ -117,6 +118,10 @@ export class RemixEngine {
     const { source, options: opts } = job;
 
     this._log(jobId, 'ingest', 6, source.type === 'youtube' ? '원본 영상을 가져오는 중' : '원본 파일을 준비하는 중');
+    if (!source.path && source.videoId && which('yt-dlp')) {
+      try { const p = await downloadYoutube(source.videoId, path.join(this.outputDir, job.userId, 'src')); if (p) { source.path = p; this.store.update('remixJobs', jobId, { source }); } }
+      catch (err) { this._log(jobId, 'ingest', 8, `유튜브 원본 다운로드 실패 (미리보기만 제공): ${err.message}`); }
+    } else if (source.path) await ensureLocalFile(source);
     await this._wait(300);
 
     let styleProfile = null;
@@ -133,6 +138,10 @@ export class RemixEngine {
 
     this._log(jobId, 'cleaning', 40, `원본 정리 중 (${[opts.removeBurnedSubtitles && '박힌 자막 제거', opts.removeSfx && '효과음 제거', opts.removeBgm && '배경음 제거'].filter(Boolean).join(', ') || '원본 유지'})`);
     const cleaning = this.planCleaning(source, opts);
+    if (source.path && (opts.removeSfx || opts.removeBgm) && which('demucs')) {
+      const vocals = await separateVocals(source.path, path.join(this.outputDir, job.userId, 'stems'));
+      if (vocals) { cleaning.vocalsPath = vocals; cleaning.steps.forEach((st) => { if (st.id === 'sfx' || st.id === 'bgm') st.method = 'demucs (실제 분리)'; }); }
+    }
     await this._wait(300);
 
     this._log(jobId, 'planning', 55, `AI 가 ${opts.targetMinutes}분 구성을 짜는 중`);
@@ -323,22 +332,34 @@ export class RemixEngine {
     const crop = cleaning.steps.find((s) => s.id === 'burned-subtitles') ? 'crop=iw:ih*0.78:0:0,' : '';
     const fit = `${crop}scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
     const parts = []; const labels = [];
+    // 오디오 소스: demucs 로 분리한 목소리 트랙(효과음·배경음 제거)이 있으면 그것을, 전체 내레이션이 원본 목소리를 대체하면 무음을 쓴다
+    const vocals = cleaning.vocalsPath && fs.existsSync(cleaning.vocalsPath) ? cleaning.vocalsPath : null;
+    const inputs = ['-i', job.source.path || 'INPUT.mp4']; if (vocals) inputs.push('-i', vocals);
+    const srcA = rebuild.narration?.replacesOriginalVoice ? null : (vocals ? '[1:a]' : '[0:a]');
     rebuild.timeline.forEach((t, i) => {
       const dur = round(t.newEnd - t.newStart);
       if (t.kind === 'card') {
         const text = String(t.title || '').replace(/[\\':]/g, ' ');
-        parts.push(`color=c=0x14161c:s=${w}x${h}:d=${dur}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(h / 14)}:x=(w-text_w)/2:y=(h-text_h)/2[v${i}]`, `anullsrc=r=48000:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${i}]`);
+        const cta = t.cta ? `,drawbox=x=(iw-${Math.round(w * 0.4)})/2:y=ih*0.62:w=${Math.round(w * 0.4)}:h=${Math.round(h / 14)}:color=0xff0033@1:t=fill,drawtext=text='구독':fontcolor=white:fontsize=${Math.round(h / 24)}:x=(w-text_w)/2:y=h*0.62+${Math.round(h / 60)}` : '';
+        parts.push(`color=c=0x14161c:s=${w}x${h}:d=${dur}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(h / 14)}:x=(w-text_w)/2:y=(h-text_h)/2${cta}[v${i}]`, `anullsrc=r=48000:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${i}]`);
       } else {
         const speed = t.speed || 1;
-        parts.push(`[0:v]trim=${t.start}:${t.end},setpts=(PTS-STARTPTS)/${speed},${fit}[v${i}]`, `[0:a]atrim=${t.start}:${t.end},asetpts=PTS-STARTPTS,atempo=${Math.min(2, Math.max(0.5, speed))}[a${i}]`);
+        parts.push(`[0:v]trim=${t.start}:${t.end},setpts=(PTS-STARTPTS)/${speed},${fit}[v${i}]`, srcA ? `${srcA}atrim=${t.start}:${t.end},asetpts=PTS-STARTPTS,atempo=${Math.min(2, Math.max(0.5, speed))}[a${i}]` : `anullsrc=r=48000:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${i}]`);
       }
       labels.push(`[v${i}][a${i}]`);
     });
     const n = rebuild.timeline.length;
-    const filter = `${parts.join(';')};${labels.join('')}concat=n=${n}:v=1:a=1[vc][ac];[vc]subtitles='${assPath.replace(/'/g, "\\'")}'[vo];[ac]loudnorm=I=-14[ao]`;
-    const args = ['-y', '-i', job.source.path || 'INPUT.mp4', '-filter_complex', filter, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', out];
+    // 내레이션(TTS) 파일들을 시점에 맞춰 섞고 원본 소리는 덕킹
+    const narrFiles = (rebuild.narration?.lines || []).filter((l) => l.audioPath && fs.existsSync(l.audioPath));
+    let mixChain = '[ac]';
+    narrFiles.forEach((l, i) => { inputs.push('-i', l.audioPath); parts.push(`[${inputs.length / 2 - 1}:a]adelay=${Math.round(l.at * 1000)}|${Math.round(l.at * 1000)},asetpts=PTS-STARTPTS[n${i}]`); });
+    const narrMix = narrFiles.length ? `;[ac]${narrFiles.map((_, i) => `[n${i}]`).join('')}amix=inputs=${narrFiles.length + 1}:duration=first:dropout_transition=0:weights=${['0.45', ...narrFiles.map(() => '1')].join(' ')}[amix]` : '';
+    if (narrFiles.length) mixChain = '[amix]';
+    const filter = `${parts.join(';')};${labels.join('')}concat=n=${n}:v=1:a=1[vc][ac]${narrMix};[vc]subtitles='${assPath.replace(/'/g, "\\'")}'[vo];${mixChain}loudnorm=I=-14[ao]`;
+    const args = ['-y', ...inputs, '-filter_complex', filter, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', out];
     if (job.source.path && which('ffmpeg')) {
-      try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(assPath, ass); await run('ffmpeg', args); return { rendered: true, output: out, subtitleFile: assPath, args }; }
+      await ensureLocalFile(job.source);
+      try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(assPath, ass); await run('ffmpeg', args); return { rendered: true, output: out, subtitleFile: assPath, args, mixedNarration: narrFiles.length, vocalsSeparated: Boolean(vocals) }; }
       catch (err) { return { rendered: false, error: err.message, plan: { bin: 'ffmpeg', args }, subtitleASS: ass }; }
     }
     return { rendered: false, plan: { bin: 'ffmpeg', args, items: n, note: job.source.path ? 'ffmpeg 을 설치하면 실제 MP4 가 렌더링됩니다.' : '링크 원본은 yt-dlp 로 내려받은 뒤 ffmpeg 으로 렌더링됩니다.' }, subtitleASS: ass };

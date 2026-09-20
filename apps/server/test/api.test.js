@@ -5,6 +5,7 @@ import { createApp, createHttpServer } from '../src/server.js';
 process.env.ALPHAMAN_AI = 'off';
 process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
+process.env.ALPHAMAN_TTS_DETECT = 'off'; // 테스트에서는 네트워크 TTS 탐색 생략
 
 async function boot() {
   const app = createApp({ memory: true, platform: 'test' });

@@ -42,7 +42,10 @@ export function buildApi(app) {
     fs.mkdirSync(dir, { recursive: true });
     const dest = path.join(dir, `${randomUUID()}${path.extname(filename).toLowerCase() || '.mp4'}`);
     fs.writeFileSync(dest, ctx.raw);
-    return app.registerUpload(user.id, { filename, mimeType, size: ctx.raw.length, path: dest });
+    // 서버리스: 다른 인스턴스에서도 쓸 수 있도록 원격 저장소(Vercel Blob)에도 올린다
+    let remoteUrl = null;
+    if (app.store.remote?.putFile) { try { remoteUrl = await app.store.remote.putFile(`uploads/${user.id}/${path.basename(dest)}`, ctx.raw, mimeType); } catch (err) { console.warn('[upload] 원격 저장 실패 (로컬만):', err.message); } }
+    return app.registerUpload(user.id, { filename, mimeType, size: ctx.raw.length, path: dest, remoteUrl });
   });
   r.post('/api/validate-file', async ({ body }) => { const { validateVideoMeta } = await import('@alphaman/core'); return validateVideoMeta(body); });
 
@@ -149,6 +152,8 @@ export function buildApi(app) {
   r.get('/api/uploads/:id/stream', async (ctx) => {
     const up = app.store.get('uploads', ctx.params.id);
     if (!up || up.userId !== auth(ctx).id) throw new ApiError(404, '업로드된 파일을 찾을 수 없습니다.');
+    const { ensureLocalFile } = await import('@alphaman/core');
+    await ensureLocalFile(up);
     if (!fs.existsSync(up.path)) throw new ApiError(410, '원본 파일이 더 이상 서버에 없습니다 (서버리스 환경은 업로드 파일을 오래 보관하지 않습니다). 다시 업로드하거나 프로그램 버전을 사용해주세요.');
     return { _file: up.path, mime: up.mimeType || 'video/mp4', filename: up.filename, inline: true };
   });
@@ -177,10 +182,9 @@ export function buildApi(app) {
   r.post('/api/voice/synthesize', async (ctx) => app.voice.synthesize(auth(ctx).id, ctx.body));
   r.get('/api/voice/renders', async (ctx) => app.voice.renders(auth(ctx).id));
   r.get('/api/voice/renders/:id/audio', async (ctx) => {
-    const rec = app.store.get('voiceRenders', ctx.params.id);
-    if (!rec || rec.userId !== auth(ctx).id) throw new ApiError(404, '음성을 찾을 수 없습니다.');
-    if (!rec.audioPath || !fs.existsSync(rec.audioPath)) throw new ApiError(404, '아직 실제 음성 파일이 생성되지 않았습니다 (TTS 제공자 미설정).');
-    return { _file: rec.audioPath, mime: rec.audioPath.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg', filename: path.basename(rec.audioPath) };
+    const f = app.voice.renderFile(auth(ctx).id, ctx.params.id);
+    if (f.redirect) { ctx.res.writeHead(302, { Location: f.redirect }); ctx.res.end(); return { _sent: true }; }
+    return { _file: f.path, mime: f.mime, filename: f.filename, inline: ctx.query.download !== '1' };
   });
 
   // ---- 자막 편집기 (픽셀링) ----

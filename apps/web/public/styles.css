@@ -202,3 +202,6 @@ label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 4px;
 .voice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 .voice-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; } .voice-card.active { border-color: var(--primary); background: var(--primary-soft); }
 @media (max-width: 1000px) { .thumb-editor { grid-template-columns: 1fr; } }
+
+/* 미리보기: 원본 박힌 자막 영역(하단) 잘라내기 */
+.player-media.cropped video, .player-media.cropped iframe { height: calc(100% / (1 - var(--crop, 0))); top: 0; object-fit: cover; }
