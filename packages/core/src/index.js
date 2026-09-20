@@ -89,7 +89,7 @@ export class AlphaMan {
   async diagnostics() {
     const out = { platform: this.platform, serverless: Boolean(process.env.VERCEL), remoteStore: this.store.remote ? this.store.remote.kind : null, tools: toolAvailability(), voiceProviders: this.voice.providers(), dataDir: this.dataDir, checks: {} };
     if (this.store.remote?.putFile) { try { const url = await this.store.remote.putFile('diag/ping.txt', Buffer.from(`ping ${Date.now()}`), 'text/plain'); out.checks.remoteFile = { ok: true, url }; } catch (err) { out.checks.remoteFile = { ok: false, error: err.message }; } }
-    try { out.checks.freeTts = await this.voice.detectFreeEngines(); } catch (err) { out.checks.freeTts = { error: err.message }; }
+    try { const { edgeLastError } = await import('./edgetts.js'); const { googleLastError } = await import('./freetts.js'); out.checks.freeTts = { ...(await this.voice.detectFreeEngines()), edgeError: edgeLastError, googleError: googleLastError }; } catch (err) { out.checks.freeTts = { error: err.message }; }
     return out;
   }
 

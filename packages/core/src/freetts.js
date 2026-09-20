@@ -34,10 +34,10 @@ export async function googleSynthesize({ text, lang = 'ko', timeoutMs = 15000 })
   return Buffer.concat(buffers);
 }
 
-let available = null;
+let available = null; export let googleLastError = null;
 export async function googleTtsAvailable() {
   if (isGoogleTtsDisabled()) return false;
   if (available !== null) return available;
-  try { const b = await googleSynthesize({ text: 'ok', lang: 'en', timeoutMs: 6000 }); available = b.length > 300; } catch { available = false; }
+  try { const b = await googleSynthesize({ text: 'hello there', lang: 'en', timeoutMs: 8000 }); available = b.length > 300; if (!available) googleLastError = `too small (${b.length}B)`; } catch (err) { available = false; googleLastError = err.message; }
   return available;
 }

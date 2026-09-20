@@ -112,11 +112,11 @@ export async function edgeSynthesize({ text, voice = 'ko-KR-SunHiNeural', rate =
 }
 
 // 실행 환경에서 실제로 동작하는지 한 번 확인해 캐시 (실패 시 브라우저 음성으로 대체)
-let available = null;
+let available = null; export let edgeLastError = null;
 export async function edgeTtsAvailable() {
   if (isEdgeTtsDisabled()) return false;
   if (available !== null) return available;
-  try { const mp3 = await edgeSynthesize({ text: 'ok', voice: 'en-US-JennyNeural', timeoutMs: 8000 }); available = mp3.length > 500; }
-  catch { available = false; }
+  try { const mp3 = await edgeSynthesize({ text: 'ok', voice: 'en-US-JennyNeural', timeoutMs: 8000 }); available = mp3.length > 500; if (!available) edgeLastError = `too small (${mp3.length}B)`; }
+  catch (err) { available = false; edgeLastError = err.message; }
   return available;
 }
