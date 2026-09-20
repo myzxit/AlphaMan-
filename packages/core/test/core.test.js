@@ -482,3 +482,17 @@ test('영상 마무리 구독 CTA · 유튜브 최적화(원본 비슷한 제목
   assert.ok(!done2.result.timeline.some((t) => t.cta));
   a.close();
 });
+
+test('서버리스 로그인: 가입 직후 다른 인스턴스에 사용자 레코드가 아직 없어도 서명된 토큰만으로 로그인 상태가 유지된다', async () => {
+  const a = app();
+  const { token, user } = a.auth.signup({ email: 'new@test.com', password: 'secret1', name: '새사용자' });
+  assert.equal(a.auth.userFromToken(token).id, user.id);
+  // 다른 인스턴스: 같은 시크릿, 하지만 저장소에는 관리자만 있음
+  const b = app();
+  const u = b.auth.userFromToken(token);
+  assert.ok(u && u.transient === true && u.id === user.id && u.email === 'new@test.com' && u.name === '새사용자' && u.role === 'user');
+  assert.equal(b.auth.publicUser(u).isAdmin, false);
+  // 위조된 토큰은 여전히 거부
+  assert.equal(b.auth.userFromToken(`${token.split('.')[0]}.bad`), null);
+  a.close(); b.close();
+});

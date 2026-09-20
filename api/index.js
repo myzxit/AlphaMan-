@@ -13,7 +13,8 @@ export const config = { api: { bodyParser: false } };
 
 export default async function vercelHandler(req, res) {
   await app.ready;
-  if (req.url && req.url.startsWith('/api/')) await app.store.refreshIfStale();
+  // 다른 인스턴스가 방금 저장한 데이터(예: 새 회원가입)를 놓치지 않도록 요청마다 원격 저장소를 짧은 주기로 다시 읽는다
+  if (req.url && req.url.startsWith('/api/')) await app.store.refreshIfStale(500);
   await handler(req, res);
   await app.store.flushAsync();
 }

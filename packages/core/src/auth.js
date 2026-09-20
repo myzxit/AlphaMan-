@@ -146,7 +146,7 @@ export class AuthService {
 
   createSession(user) {
     const exp = Date.now() + SESSION_TTL_MS;
-    const token = sign({ uid: user.id, email: user.email, role: user.role, exp, n: randomBytes(4).toString('hex') });
+    const token = sign({ uid: user.id, email: user.email, name: user.name, role: user.role, exp, n: randomBytes(4).toString('hex') });
     this.store.update('users', user.id, { lastLoginAt: new Date().toISOString() });
     return { token, user: this.publicUser(user) };
   }
@@ -163,6 +163,11 @@ export class AuthService {
     if (this.store.findOne('sessions', (x) => x.revoked === token.slice(-32))) return null;
     let user = this.store.get('users', payload.uid) || this.store.findOne('users', (u) => u.email === payload.email);
     if (!user && payload.email === ADMIN_ACCOUNT.email) user = this.seedAdmin();
+    // 서버리스: 방금 가입한 사용자가 아직 이 인스턴스의 저장소에 동기화되지 않았을 수 있다.
+    // 서명이 유효하면 토큰의 정보로 임시 사용자 객체를 만들어 "로그인이 필요합니다" 오류 대신 정상 응답한다 (저장하지는 않음).
+    if (!user && payload.uid && payload.email) {
+      user = { id: payload.uid, email: payload.email, name: payload.name || payload.email.split('@')[0], role: payload.role === 'admin' ? 'user' : (payload.role || 'user'), status: 'active', locale: 'ko', theme: 'system', referralCode: '', createdAt: new Date().toISOString(), transient: true };
+    }
     if (!user || user.status === 'banned') return null;
     return user;
   }
