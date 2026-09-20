@@ -4,8 +4,8 @@ import { parseYoutubeUrl, fetchYoutubeMeta, probe } from './media.js';
 import { transcribe, semanticSplit } from './subtitles/stt.js';
 
 export class LongformEngine {
-  constructor({ store, credits, ai, notifications, library = null }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.notifications = notifications; this.library = library;
+  constructor({ store, credits, ai, notifications, library = null, seo = null, thumbnail = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.notifications = notifications; this.library = library; this.seo = seo; this.thumbnail = thumbnail;
     this.speed = Number(process.env.ALPHAMAN_JOB_SPEED || 1);
   }
 
@@ -21,7 +21,7 @@ export class LongformEngine {
     } else {
       const yt = parseYoutubeUrl(url);
       const meta = await fetchYoutubeMeta(yt.id);
-      source = { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, durationSec: meta.durationSec || 900, thumbnail: meta.thumbnail };
+      source = { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, durationSec: meta.durationSec || 900, thumbnail: meta.thumbnail, tags: meta.tags || [], description: meta.description || '' };
     }
     const opts = { removeSilence: true, silenceThreshold: 0.7, autoSubtitles: true, chapters: true, jumpCuts: true, language: 'ko', ...options };
     const minutes = Math.round((source.durationSec / 60) * 100) / 100;
@@ -47,7 +47,9 @@ export class LongformEngine {
     const removed = cuts.reduce((s, c) => s + c.end - c.start, 0);
     const chapters = job.options.chapters ? await this._chapters(segs, job.source.title) : [];
     const subtitles = job.options.autoSubtitles ? semanticSplit(segs) : [];
+    const seo = this.seo ? await this.seo.generate({ kind: 'longform', title: job.source.title, hook: segs[0]?.text || '', originalTitle: job.source.title, originalTags: job.source.tags || [], originalDescription: job.source.description || '', channel: job.source.channel || '', segments: segs, durationSec: job.source.durationSec - removed, language: job.options.language }).catch(() => null) : null;
     const result = {
+      seo,
       originalDurationSec: job.source.durationSec,
       editedDurationSec: Math.round((job.source.durationSec - removed) * 100) / 100,
       removedSec: Math.round(removed * 100) / 100,
@@ -56,6 +58,7 @@ export class LongformEngine {
     };
     const done = this.store.update('longformJobs', jobId, { status: 'done', progress: 100, result });
     if (this.library) this.library.addLongformJob(done); // 보관함 자동 저장
+    if (this.thumbnail) await this.thumbnail.auto(job.userId, 'longform', jobId).catch((e) => console.warn('[longform] 썸네일 자동 제작 실패:', e.message));
     this.notifications?.push(job.userId, { type: 'longform.done', title: '롱폼 컷편집 완료', body: `${result.removedSec}초의 공백을 제거했어요. 보관함에서 미리 볼 수 있어요.`, link: `#/longform/${jobId}` });
   }
 

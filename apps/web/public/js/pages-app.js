@@ -3,6 +3,8 @@ import { get, post, put, patch, del, uploadFile, downloadUrl, getToken } from '.
 import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtNum, fmtDate, fmtKRW, compactViews, creditsLabel, readVideoMeta, qs, qsa, on, debounce } from './ui.js';
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
 import { openPreview } from './player.js';
+import { seoButtons, bindSeoButtons } from './pages-seo.js';
+import { listenFreeVoice, playProfileSample } from './tts.js';
 
 const auth = (fn) => Object.assign(fn, { requiresAuth: true });
 
@@ -31,7 +33,7 @@ function statusBadge(s) { return `<span class="badge ${s === 'done' ? 'badge-suc
 
 // ---------------- 쇼츠 스튜디오 ----------------
 export const studio = auth(async ({ view, state, navigate }) => {
-  const [{ templates, genres, ratios }, jobs, targets, { profiles: voiceProfiles }] = await Promise.all([get('/api/shorts/templates'), get('/api/shorts/jobs'), get('/api/translate/targets'), get('/api/voice/profiles')]);
+  const [{ templates, genres, ratios }, jobs, targets, { profiles: voiceProfiles, freeVoices = [] }] = await Promise.all([get('/api/shorts/templates'), get('/api/shorts/jobs'), get('/api/translate/targets'), get('/api/voice/profiles')]);
   const feats = state.info.content.features.items;
   view.innerHTML = html`<div class="row row-between"><h1>쇼츠 스튜디오</h1><span class="badge">보유 이용권 ${creditsLabel(state.user)}</span></div>
     <div class="split"><div class="card">
@@ -42,7 +44,8 @@ export const studio = auth(async ({ view, state, navigate }) => {
       ${raw(transcriptPanel('s', { info: state.info }))}
       <h3 style="margin-top:20px">편집 옵션</h3>
       <div class="toggle-grid">${raw(feats.map((f) => `<label class="check"><input type="checkbox" data-opt="${f.id === 'template' ? '' : f.id}" ${f.id === 'aiHookVoice' || f.id === 'template' ? '' : 'checked'} ${f.id === 'template' ? 'disabled' : ''}/> ${esc(f.title)}</label>`).join(''))}</div>
-      <div class="field" style="margin-top:8px"><label>AI 후킹 보이스 목소리</label><select id="s-voice"><option value="">기본 AI 보이스</option>${raw(voiceProfiles.map((p) => `<option value="${p.id}">🎤 ${esc(p.name)} (내 목소리)</option>`).join(''))}</select><div class="tiny muted">내 목소리를 쓰려면 <a href="#/voice">내 목소리 TTS</a>에서 프로필을 만드세요.</div></div>
+      <div class="field" style="margin-top:8px"><label>AI 후킹 보이스 목소리</label><div class="row"><select id="s-voice"><optgroup label="무료 한국어 목소리">${raw(freeVoices.filter((v) => (v.lang || 'ko-KR').startsWith('ko')).map((v) => `<option value="free:${v.id}" ${v.id === 'ko-sunhi' ? 'selected' : ''}>🔊 ${esc(v.name)} — ${esc(v.tone)}</option>`).join(''))}</optgroup><optgroup label="내 목소리">${raw(voiceProfiles.map((p) => `<option value="profile:${p.id}">🎤 ${esc(p.name)} (내 목소리)</option>`).join('') || '<option disabled>프로필 없음</option>')}</optgroup><optgroup label="다른 언어">${raw(freeVoices.filter((v) => !(v.lang || 'ko-KR').startsWith('ko')).map((v) => `<option value="free:${v.id}">🌐 ${esc(v.name)} — ${esc(v.tone)}</option>`).join(''))}</optgroup></select><button class="btn btn-sm" id="s-voice-listen" type="button" title="선택한 목소리 들어보기">▶ 듣기</button></div><div class="tiny muted">무료 목소리 ${freeVoices.length}종 · 내 목소리는 <a href="#/voice">내 목소리 TTS</a>에서 프로필을 만드세요.</div></div>
+      <div class="field"><label class="check"><input type="checkbox" id="s-outro" checked/> 영상 마무리에 구독·좋아요·알림 카드 넣기</label><input id="s-outro-text" value="구독 · 좋아요 · 알림 설정 🔔" maxlength="60" style="margin-top:6px" /></div>
       <div class="grid grid-3" style="margin-top:12px"><div class="field"><label>장르</label><select id="s-genre"><option value="">자동 감지</option>${raw(genres.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join(''))}</select></div><div class="field"><label>비율</label><select id="s-ratio">${raw(ratios.map((r) => `<option ${r === '9:16' ? 'selected' : ''}>${r}</option>`).join(''))}</select></div><div class="field"><label>클립 개수</label><select id="s-count"><option value="auto">자동 (2분당 1개)</option>${raw([1, 2, 3, 5, 8, 10].map((n) => `<option value="${n}">${n}개</option>`).join(''))}</select></div></div>
       <div class="field"><label>템플릿</label><div class="grid grid-5" id="s-templates"><div class="card template-card active" data-tpl="auto"><div class="template-swatch">자동</div><div class="tiny">장르에 맞게</div></div>${raw(templates.map((t) => `<div class="card template-card" data-tpl="${t.id}"><div class="template-swatch" style="font-family:'${esc(t.font)}';color:${esc(t.color)}">${esc(t.name)}</div><div class="tiny">${esc(t.name)}</div></div>`).join(''))}</div></div>
       <div class="field"><label>다국어 번역 자막/제목 (선택)</label><div class="chips" id="s-langs">${raw(targets.filter((t) => t.code !== 'ko').map((t) => `<span class="chip" data-lang="${t.code}">${esc(t.label)}</span>`).join(''))}</div></div>
@@ -53,6 +56,7 @@ export const studio = auth(async ({ view, state, navigate }) => {
 
   let mode = 'youtube'; let uploadId = null; let localPath = null; let tpl = 'auto'; const langs = new Set();
   const tc = transcriptController('s'); // 원본 대본 (브라우저 Whisper / 붙여넣기)
+  qs('#s-voice-listen').onclick = () => { const v = qs('#s-voice').value || ''; if (v.startsWith('profile:')) playProfileSample(v.slice(8)); else listenFreeVoice(v.replace('free:', ''), freeVoices); };
   qsa('#s-tabs .tab').forEach((t) => { t.onclick = () => { mode = t.dataset.tab; qsa('#s-tabs .tab').forEach((x) => x.classList.remove('active')); t.classList.add('active'); ['youtube', 'file', 'local'].forEach((m) => qs(`#s-${m}`).classList.toggle('hidden', m !== mode)); }; });
   qsa('#s-templates .template-card').forEach((c) => { c.onclick = () => { tpl = c.dataset.tpl; qsa('#s-templates .template-card').forEach((x) => x.classList.remove('active')); c.classList.add('active'); }; });
   qsa('#s-langs .chip').forEach((c) => { c.onclick = () => { c.classList.toggle('active'); langs.has(c.dataset.lang) ? langs.delete(c.dataset.lang) : langs.add(c.dataset.lang); }; });
@@ -77,7 +81,8 @@ export const studio = auth(async ({ view, state, navigate }) => {
   }
   qs('#s-go').onclick = async (e) => {
     if (tc.state.busy) return toast('원본 대본 추출이 끝날 때까지 잠시 기다려주세요.', 'info');
-    const options = { template: tpl, ratio: qs('#s-ratio').value, genre: qs('#s-genre').value || undefined, clipCount: qs('#s-count').value, targetLanguages: [...langs], language: 'ko', voiceProfileId: qs('#s-voice').value || null };
+    const vsel = qs('#s-voice').value || '';
+    const options = { template: tpl, ratio: qs('#s-ratio').value, genre: qs('#s-genre').value || undefined, clipCount: qs('#s-count').value, targetLanguages: [...langs], language: 'ko', voiceProfileId: vsel.startsWith('profile:') ? vsel.slice(8) : null, voiceId: vsel.startsWith('free:') ? vsel.slice(5) : null, outro: qs('#s-outro').checked, outroText: qs('#s-outro-text').value.trim() || undefined };
     qsa('[data-opt]').forEach((c) => { if (c.dataset.opt) options[c.dataset.opt] = c.checked; });
     const body = { options, ...tc.payload() };
     if (mode === 'youtube') { body.url = qs('#s-url').value; body.options.estimatedDurationSec = Number(qs('#s-est').value || 10) * 60; if (!body.url.trim()) return toast('링크를 입력해주세요.', 'error'); }
@@ -105,6 +110,7 @@ export const studioJob = auth(async ({ view, params, state, navigate }) => {
     on(view, 'click', '[data-edit]', (e, t) => editClipModal(job.clips.find((c) => c.id === t.dataset.edit), templates, ratios, async () => { job = await get(`/api/shorts/jobs/${job.id}`); draw(); }));
     on(view, 'click', '[data-publish]', (e, t) => navigate(`/publish?clip=${t.dataset.publish}`));
     on(view, 'click', '[data-preview]', (e, t) => openPreview({ kind: 'shorts', refId: t.dataset.preview }));
+    bindSeoButtons(view);
     on(view, 'click', '[data-export]', async (e, t) => {
       const fmt = t.dataset.format;
       if (fmt === 'mp4') { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=mp4`), { headers: { Authorization: `Bearer ${getToken()}` } }); if ((r.headers.get('content-type') || '').includes('json')) { const j = await r.json(); modal(`<p>${esc(j.message || '')}</p><pre class="log">${esc(JSON.stringify(j.plan || j.clip?.render, null, 2))}</pre>`, { title: '렌더 계획' }); } else { const b = await r.blob(); saveBlob(b, `${t.dataset.export}.mp4`); } }
@@ -121,11 +127,12 @@ function saveBlob(blob, name) { const a = document.createElement('a'); a.href = 
 function clipCard(c, templates) {
   const t = templates.find((x) => x.id === c.templateId) || templates[0];
   const firstSub = c.subtitles[0]?.text || '';
-  return `<div class="card clip-card"><div class="clip-preview r-${c.ratio.replace(':', '-')}" style="background-image:url('${esc(c.thumbnail || `https://picsum.photos/seed/${c.id}/270/480`)}')">${c.hook ? `<div class="hook">🔥 ${esc(c.hook.text)}</div>` : ''}<div class="sub" style="font-family:'${esc(t.font)}';color:${esc(t.color)};bottom:14%;font-size:${Math.round(t.fontSize / 4)}px">${esc(firstSub)}</div>${c.zoomKeyframes?.length ? `<div class="zoom">🔍 줌 ${c.zoomKeyframes.length}</div>` : ''}</div>
-    <div><b>${esc(c.title)}</b><div class="tiny muted">${fmtTime(c.start)} → ${fmtTime(c.end)} · ${c.durationSec}초 · ${c.ratio} · ${esc(t.name)} · 점수 ${c.score}</div></div>
+  const thumb = c.thumbnailSet ? downloadUrl(`/api/thumbnail/shorts/${c.id}/image.svg?v=${encodeURIComponent(c.thumbnailSet.updatedAt)}`) : (c.thumbnail || `https://picsum.photos/seed/${c.id}/270/480`);
+  return `<div class="card clip-card"><div class="clip-preview r-${c.ratio.replace(':', '-')}" style="background-image:url('${esc(thumb)}')">${!c.thumbnailSet && c.hook ? `<div class="hook">🔥 ${esc(c.hook.text)}</div>` : ''}${!c.thumbnailSet ? `<div class="sub" style="font-family:'${esc(t.font)}';color:${esc(t.color)};bottom:14%;font-size:${Math.round(t.fontSize / 4)}px">${esc(firstSub)}</div>` : ''}${c.zoomKeyframes?.length ? `<div class="zoom">🔍 줌 ${c.zoomKeyframes.length}</div>` : ''}</div>
+    <div><b>${esc(c.seo?.bestTitle || c.title)}</b><div class="tiny muted">${fmtTime(c.start)} → ${fmtTime(c.end)} · ${c.durationSec}초${c.outro ? ` + 구독 카드 ${c.outro.durationSec}초` : ''} · ${c.ratio} · ${esc(t.name)} · 점수 ${c.score}</div></div>
     <div class="tiny muted">${esc(c.reason)}</div>
-    <div class="chips">${c.cuts?.length ? `<span class="chip">무음 ${c.cuts.length}곳 제거</span>` : ''}${c.subtitles.length ? `<span class="chip">자막 ${c.subtitles.length}줄</span>` : ''}${c.audio?.voiceEnhance ? '<span class="chip">음성 향상</span>' : ''}${c.audio?.aiHookVoice ? '<span class="chip">AI 후킹 보이스</span>' : ''}${Object.keys(c.translations || {}).map((l) => `<span class="chip">${esc(l.toUpperCase())} 번역</span>`).join('')}</div>
-    <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-preview="${c.id}">▶ 미리보기</button><button class="btn btn-sm" data-edit="${c.id}">편집</button><button class="btn btn-sm" data-export="${c.id}" data-format="mp4">MP4</button><button class="btn btn-sm" data-export="${c.id}" data-format="srt">SRT</button><button class="btn btn-sm" data-publish="${c.id}">SNS 업로드</button></div></div>`;
+    <div class="chips">${c.cuts?.length ? `<span class="chip">무음 ${c.cuts.length}곳 제거</span>` : ''}${c.subtitles.length ? `<span class="chip">자막 ${c.subtitles.length}줄</span>` : ''}${c.audio?.voiceEnhance ? '<span class="chip">음성 향상</span>' : ''}${c.audio?.aiHookVoice ? `<span class="chip">AI 후킹 보이스${c.audio.aiHookVoice.voiceName ? ` · ${esc(c.audio.aiHookVoice.voiceName)}` : c.audio.aiHookVoice.voice === 'my-voice' ? ' · 내 목소리' : ''}</span>` : ''}${c.outro ? '<span class="chip">구독 CTA</span>' : ''}${c.seo ? `<span class="chip">태그 ${c.seo.tags.length}</span>` : ''}${Object.keys(c.translations || {}).map((l) => `<span class="chip">${esc(l.toUpperCase())} 번역</span>`).join('')}</div>
+    <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-preview="${c.id}">▶ 미리보기</button>${seoButtons('shorts', c.id)}<button class="btn btn-sm" data-edit="${c.id}">편집</button><button class="btn btn-sm" data-export="${c.id}" data-format="mp4">MP4</button><button class="btn btn-sm" data-export="${c.id}" data-format="srt">SRT</button><button class="btn btn-sm" data-publish="${c.id}">SNS 업로드</button></div></div>`;
 }
 
 function editClipModal(clip, templates, ratios, onSaved) {
@@ -133,12 +140,13 @@ function editClipModal(clip, templates, ratios, onSaved) {
     <div class="grid grid-2"><div class="field"><label>시작(초)</label><input id="e-start" type="number" step="0.1" value="${clip.start}" /></div><div class="field"><label>끝(초)</label><input id="e-end" type="number" step="0.1" value="${clip.end}" /></div></div>
     <div class="grid grid-2"><div class="field"><label>비율</label><select id="e-ratio">${raw(ratios.map((r) => `<option ${r === clip.ratio ? 'selected' : ''}>${r}</option>`).join(''))}</select></div><div class="field"><label>템플릿</label><select id="e-tpl">${raw(templates.map((t) => `<option value="${t.id}" ${t.id === clip.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join(''))}</select></div></div>
     <div class="field"><label>첫 3초 후킹 멘트</label><input id="e-hook" value="${clip.hook?.text || ''}" /></div>
+    <div class="field"><label>마무리 구독 카드 문구 (비우면 카드 없음)</label><input id="e-outro" value="${clip.outro?.text || ''}" maxlength="60" /></div>
     <div class="field"><label>자막 (한 줄에 하나: 시작|끝|텍스트)</label><textarea id="e-subs" rows="6">${clip.subtitles.map((s) => `${s.start}|${s.end}|${s.text}`).join('\n')}</textarea></div>
     <label class="check"><input type="checkbox" id="e-silence" ${clip.cuts?.length ? 'checked' : ''}/> 무음 구간 제거 유지</label>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn btn-primary" id="e-save">저장</button></div>`, { title: '클립 편집', wide: true });
   m.el.querySelector('#e-save').onclick = async () => {
     const subs = m.el.querySelector('#e-subs').value.split('\n').map((l) => l.split('|')).filter((p) => p.length >= 3).map(([start, end, ...t]) => ({ start: Number(start), end: Number(end), text: t.join('|') }));
-    try { await patch(`/api/shorts/clips/${clip.id}`, { title: m.el.querySelector('#e-title').value, start: Number(m.el.querySelector('#e-start').value), end: Number(m.el.querySelector('#e-end').value), ratio: m.el.querySelector('#e-ratio').value, templateId: m.el.querySelector('#e-tpl').value, hookText: m.el.querySelector('#e-hook').value, subtitles: subs, removeSilence: m.el.querySelector('#e-silence').checked }); await post(`/api/shorts/clips/${clip.id}/render`); m.close(); toast('저장되었습니다.'); onSaved(); } catch (err) { toast(err.message, 'error'); }
+    try { await patch(`/api/shorts/clips/${clip.id}`, { title: m.el.querySelector('#e-title').value, start: Number(m.el.querySelector('#e-start').value), end: Number(m.el.querySelector('#e-end').value), ratio: m.el.querySelector('#e-ratio').value, templateId: m.el.querySelector('#e-tpl').value, hookText: m.el.querySelector('#e-hook').value, outro: m.el.querySelector('#e-outro').value.trim() ? { text: m.el.querySelector('#e-outro').value.trim() } : null, subtitles: subs, removeSilence: m.el.querySelector('#e-silence').checked }); await post(`/api/shorts/clips/${clip.id}/render`); m.close(); toast('저장되었습니다.'); onSaved(); } catch (err) { toast(err.message, 'error'); }
   };
 }
 
@@ -157,6 +165,7 @@ export const longform = auth(async ({ view, params, state, navigate }) => {
   const tc = transcriptController('l');
   qs('#l-file').onchange = (e) => { const f = e.target.files[0]; if (f) tc.fromFile(f); };
   on(view, 'click', '[data-preview-longform]', (e, t) => openPreview({ kind: 'longform', refId: t.dataset.previewLongform }));
+  bindSeoButtons(view);
   on(view, 'click', '[data-del]', async (e, t) => { if (await confirmDialog('작업을 삭제할까요?')) { await del(`/api/longform/jobs/${t.dataset.del}`); navigate(`/longform?r=${Date.now()}`); } });
   qs('#l-go').onclick = async (e) => {
     if (tc.state.busy) return toast('원본 대본 추출이 끝날 때까지 잠시 기다려주세요.', 'info');
@@ -174,7 +183,7 @@ export const longform = auth(async ({ view, params, state, navigate }) => {
 function renderLongform(j) {
   if (j.status !== 'done') return `<div class="card" style="margin-top:16px"><b>${esc(j.source.title)}</b> ${statusBadge(j.status)} <div class="progress" style="margin-top:8px"><div style="width:${j.progress}%"></div></div><p class="tiny muted">잠시 후 새로고침됩니다.</p></div>`;
   const r = j.result; const D = r.originalDurationSec;
-  return `<div class="card" style="margin-top:16px"><div class="row row-between"><h3>${esc(j.source.title)}</h3><div class="row"><button class="btn btn-primary btn-sm" data-preview-longform="${j.id}">▶ 미리보기</button><a class="btn btn-sm" href="#/library?kind=longform">📁 보관함</a></div></div><div class="chips"><span class="chip">원본 ${fmtTime(D)}</span><span class="chip">편집본 ${fmtTime(r.editedDurationSec)}</span><span class="chip">공백 제거 ${r.removedSec}초 (${r.cuts.length}곳)</span><span class="chip">자막 ${r.subtitles.length}줄</span><span class="chip">STT: ${esc(r.transcriptEngine)}</span>${exactBadge(r.transcriptExact)}</div>
+  return `<div class="card" style="margin-top:16px"><div class="row row-between"><h3>${esc(j.source.title)}</h3><div class="row" style="flex-wrap:wrap"><button class="btn btn-primary btn-sm" data-preview-longform="${j.id}">▶ 미리보기</button>${seoButtons('longform', j.id)}<a class="btn btn-sm" href="#/library?kind=longform">📁 보관함</a></div></div>${r.seo ? `<div class="small" style="margin:6px 0"><b>🏆 추천 제목:</b> ${esc(r.seo.bestTitle)}</div>` : ''}<div class="chips"><span class="chip">원본 ${fmtTime(D)}</span><span class="chip">편집본 ${fmtTime(r.editedDurationSec)}</span><span class="chip">공백 제거 ${r.removedSec}초 (${r.cuts.length}곳)</span><span class="chip">자막 ${r.subtitles.length}줄</span><span class="chip">STT: ${esc(r.transcriptEngine)}</span>${exactBadge(r.transcriptExact)}</div>
     <div class="timeline" style="margin:12px 0">${r.timeline.map((k) => `<div class="seg" style="left:${(k.start / D) * 100}%;width:${((k.end - k.start) / D) * 100}%"></div>`).join('')}${r.cuts.map((c) => `<div class="cut" style="left:${(c.start / D) * 100}%;width:${Math.max(0.3, ((c.end - c.start) / D) * 100)}%"></div>`).join('')}</div>
     <h4>챕터</h4>${r.chapters.map((c) => `<div class="row"><span class="kbd">${fmtTime(c.at)}</span> ${esc(c.title)}</div>`).join('')}
     <details style="margin-top:10px"><summary>자막 미리보기</summary><div class="log">${r.subtitles.slice(0, 40).map((s) => `${fmtTime(s.start)} ${esc(s.text)}`).join('\n')}</div></details></div>`;

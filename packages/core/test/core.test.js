@@ -299,7 +299,8 @@ test('내 목소리 TTS: 샘플 업로드 → 프로필 → 합성, 쇼츠 후�
   assert.equal(clip.audio.aiHookVoice.voice, 'my-voice');
   assert.equal(clip.audio.aiHookVoice.voiceProfileId, profile.id);
   // 재구성 내레이션
-  await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'intro', estimatedDurationSec: 300 } }), /음성 프로필/);
+  // 프로필이 없어도 무료 한국어 목소리로 내레이션 (존재하지 않는 프로필 id 는 404)
+  await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'intro', voiceProfileId: 'nope', estimatedDurationSec: 300 } }), /음성 프로필/);
   const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 2, narration: 'full', voiceProfileId: profile.id, estimatedDurationSec: 300 } });
   const done = await waitFor(() => { const j = a.store.get('remixJobs', remix.id); return j.status === 'done' ? j : null; }, 8000);
   assert.ok(done.result.narration.lines.length >= 2);
@@ -393,5 +394,91 @@ test('보관함: 쇼츠·재구성·롱폼 완료 시 자동 저장, 미리보�
   assert.equal(a.library.list(user.id).stats.byKind.remix, 0);
   a.shorts.deleteJob(user.id, job.id);
   assert.equal(a.library.list(user.id).stats.byKind.shorts, 0);
+  a.close();
+});
+
+
+test('무료 한국어 TTS 목소리: 목록·합성(브라우저/edge)·샘플 듣기, 기본 후킹 보이스와 내레이션에 사용', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'free@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 100, 'test');
+  const voices = a.voice.freeVoices();
+  assert.ok(voices.length >= 25 && voices.every((v) => v.id && v.name && v.sampleText && v.lang));
+  assert.ok(voices.filter((v) => v.lang === 'ko-KR').length >= 18, '한국어 목소리(기본 + 스타일 변형)가 충분히 많아야 한다');
+  assert.ok(voices.some((v) => v.gender === 'male') && voices.some((v) => v.gender === 'female'));
+  const r = await a.voice.synthesize(user.id, { voiceId: 'ko-hyunsu', text: '아직도 이거 모르셨어요?', style: 'hook' });
+  assert.equal(r.voiceId, 'ko-hyunsu'); assert.ok(['browser', 'edge-tts'].includes(r.engine));
+  if (r.engine === 'browser') assert.equal(r.browser.lang, 'ko-KR');
+  assert.throws(() => a.voice.sampleFile(user.id, 'nope'), /찾을 수 없습니다/);
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-voice2-')); const sample = path.join(dir, 'me.wav'); fs.writeFileSync(sample, Buffer.alloc(16 * 1024 * 20));
+  const up = a.registerUpload(user.id, { filename: 'me.wav', mimeType: 'audio/wav', size: 1, path: sample });
+  const profile = await a.voice.createProfile(user.id, { uploadId: up.id, name: '내 목소리', consent: true });
+  assert.equal(a.voice.sampleFile(user.id, profile.id).path, sample);
+  assert.equal(a.voice.resolve(user.id, { voiceProfileId: profile.id }).kind, 'profile');
+  assert.equal(a.voice.resolve(user.id, {}).id, 'ko-sunhi');
+  // 후킹 보이스: 프로필 없이 무료 목소리 선택
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, aiHookVoice: true, voiceId: 'ko-yujin' } });
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  const clip = a.shorts.getJob(user.id, job.id).clips[0];
+  assert.equal(clip.audio.aiHookVoice.voice, 'ko-yujin');
+  // 내레이션도 무료 목소리로
+  const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, narration: 'intro', voiceId: 'ko-injoon', estimatedDurationSec: 120 } });
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', remix.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.equal(done.result.narration.voice.id, 'ko-injoon');
+  a.close();
+});
+
+test('영상 마무리 구독 CTA · 유튜브 최적화(원본 비슷한 제목/추천 제목/태그/해시태그) · 썸네일 자동 제작(원본 비슷하게 + 장면 선택 + 편집)', async () => {
+  const { composeSvg, extractKeywords } = await import('../src/index.js');
+  const a = app();
+  const { user } = a.auth.signup({ email: 'seo@test.com', password: 'secret1' });
+  a.credits.grant(user.id, 200, 'test');
+  const transcript = [{ start: 0, end: 5, text: '오늘은 유튜브 알고리즘의 비밀 3가지를 알려드립니다' }, { start: 5, end: 12, text: '첫째 썸네일이 클릭률을 결정합니다' }, { start: 12, end: 20, text: '둘째 첫 3초 후킹이 시청 지속시간을 만듭니다' }, { start: 20, end: 30, text: '셋째 제목과 태그가 검색 노출을 만듭니다' }, { start: 30, end: 40, text: '알고리즘은 결국 시청자를 봅니다' }];
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 60, clipCount: 1 }, transcript });
+  await waitFor(() => a.store.get('jobs', job.id).status === 'done');
+  const clip = a.shorts.getJob(user.id, job.id).clips[0];
+  // 마무리 구독 카드
+  assert.equal(clip.outro.style, 'subscribe'); assert.match(clip.outro.text, /구독/);
+  const spec = a.library.previewSpec(user.id, 'shorts', clip.id);
+  const last = spec.items[spec.items.length - 1];
+  assert.equal(last.kind, 'card'); assert.equal(last.cta, true); assert.ok(spec.durationSec > clip.durationSec);
+  // 유튜브 최적화
+  const seo = clip.seo;
+  assert.ok(seo && seo.titles.length >= 4 && seo.bestTitle && seo.similarTitle);
+  assert.ok(seo.titles.every((t) => t.text.length <= 60 && t.score > 0));
+  assert.ok(seo.tags.length >= 5 && seo.tags.includes('쇼츠'));
+  assert.equal(seo.hashtags.length, 3); assert.ok(seo.hashtags.includes('#shorts'));
+  assert.ok(seo.keywords.includes('알고리즘') || seo.keywords.includes('썸네일'));
+  assert.match(seo.description, /구독/);
+  assert.ok(seo.checklist.length >= 7 && seo.checklist.find((c) => /구독/.test(c.label)).ok);
+  assert.ok(extractKeywords('썸네일이 썸네일을 썸네일은 제목과 제목은').includes('썸네일'));
+  // 원본 비슷한 제목: 원본 접두/이모지 유지
+  const seo2 = await a.seo.generate({ kind: 'shorts', title: '핵심 정리', hook: '이거 모르면 손해', originalTitle: '[알파채널] 유튜브 성장 비법 총정리 🔥', originalTags: ['유튜브', '성장'], segments: transcript, durationSec: 40 });
+  assert.match(seo2.similarTitle, /^\[알파채널\]/); assert.match(seo2.similarTitle, /🔥$/); assert.ok(seo2.tags.includes('유튜브'));
+  // 썸네일: 자동 제작(유튜브 원본 → 원본과 비슷하게) + 편집
+  const set = a.thumbnail.get(user.id, 'shorts', clip.id);
+  assert.ok(set && set.svg.startsWith('<svg') && set.selectedId === 'original' && set.style === 'original-like');
+  assert.ok(set.candidates.length >= 4 && set.candidates.some((c) => c.id === 'yt-2'));
+  assert.equal(set.width, 1080); assert.equal(set.height, 1920);
+  assert.ok(set.svg.includes('/api/thumbnail/proxy?url=') && set.svg.includes('SHORTS'));
+  const edited = await a.thumbnail.update(user.id, 'shorts', clip.id, { candidateId: 'yt-2', headline: '3가지 비밀', subline: '알고리즘 정복', style: 'big-number', palette: 'red' });
+  assert.equal(edited.selectedId, 'yt-2'); assert.ok(edited.svg.includes('hq2.jpg') && edited.svg.includes('비밀') && edited.svg.includes('#ff3b3b'));
+  const item = a.library.list(user.id).items.find((i) => i.refId === clip.id);
+  assert.match(item.thumbnail, /\/api\/thumbnail\/shorts\//);
+  const frame = a.thumbnail.addUserFrame(user.id, 'shorts', clip.id, { buffer: Buffer.from('jpegdata'), at: 3.5 });
+  assert.ok(a.thumbnail.frameFile(user.id, 'shorts', clip.id, 100).path.endsWith('.jpg') && frame.at === 3.5);
+  assert.ok(!a.thumbnail.isAllowedProxy('https://evil.example.com/a.jpg') && a.thumbnail.isAllowedProxy('https://i.ytimg.com/vi/x/hq1.jpg'));
+  const svg = composeSvg({ width: 1280, height: 720, image: null, headline: '텍스트 없는 배경', subline: '', style: 'split', palette: 'mint', badge: null });
+  assert.ok(svg.includes('bgGrad') && svg.includes('#2dd4bf'));
+  // 재구성도 마무리 구독 카드 + SEO
+  const remix = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 60 }, transcript });
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', remix.id); return j.status === 'done' ? j : null; }, 8000);
+  const lastCard = done.result.timeline[done.result.timeline.length - 1];
+  assert.equal(lastCard.cta, true); assert.match(lastCard.title, /구독/);
+  assert.ok(done.result.seo.bestTitle && done.thumbnailSet.svg);
+  const noOutro = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 60, outro: false }, transcript });
+  const done2 = await waitFor(() => { const j = a.store.get('remixJobs', noOutro.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.ok(!done2.result.timeline.some((t) => t.cta));
   a.close();
 });

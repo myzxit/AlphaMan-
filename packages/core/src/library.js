@@ -14,7 +14,7 @@ export class LibraryService {
     const rendered = Boolean(renderPath && fs.existsSync(renderPath));
     const rec = { userId, kind, refId, jobId, title: String(title || '제목 없음').slice(0, 120), thumbnail, durationSec: round(durationSec), ratio, renderPath, rendered, subtitleCount, transcriptExact, sourceTitle, sourceType, extra, savedAt: new Date().toISOString() };
     const existing = this.store.find('library', (r) => r.userId === userId && r.kind === kind && r.refId === refId)[0];
-    if (existing) return this.store.update('library', existing.id, { ...rec, favorite: existing.favorite, tags: existing.tags, note: existing.note });
+    if (existing) return this.store.update('library', existing.id, { ...rec, thumbnail: existing.thumbnailCustom ? existing.thumbnail : rec.thumbnail, thumbnailCustom: existing.thumbnailCustom || false, favorite: existing.favorite, tags: existing.tags, note: existing.note });
     return this.store.insert('library', { ...rec, favorite: false, tags: [], note: '' });
   }
 
@@ -134,12 +134,14 @@ export class LibraryService {
         pos = Math.max(pos, c.end);
       }
       if (clip.end > pos) { items.push({ kind: 'source', start: pos, end: clip.end, speed: 1, newStart: round(cursor), newEnd: round(cursor + clip.end - pos) }); cursor += clip.end - pos; }
+      if (clip.outro) { items.push({ kind: 'card', title: clip.outro.text, cta: true, channel: clip.outro.channel || null, start: 0, end: 0, speed: 1, newStart: round(cursor), newEnd: round(cursor + clip.outro.durationSec) }); cursor += clip.outro.durationSec; }
       const rendered = Boolean(clip.render?.rendered && clip.render.output && fs.existsSync(clip.render.output));
       return {
         kind: 'shorts', refId: clip.id, title: clip.title, ratio: clip.ratio, durationSec: round(cursor), rendered, burnedSubtitles: false,
         renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : null,
         source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map(sub), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
         zoomKeyframes: clip.zoomKeyframes || [], templateId: clip.templateId, transcriptExact: job.transcriptExact ?? null, thumbnail: clip.thumbnail || job.source.thumbnail || null,
+        outro: clip.outro || null, seo: clip.seo || null, thumbnailSet: clip.thumbnailSet ? { ...clip.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/shorts/${clip.id}/image.svg?v=${encodeURIComponent(clip.thumbnailSet.updatedAt)}` } : null,
       };
     }
     if (kind === 'remix') {
@@ -150,9 +152,10 @@ export class LibraryService {
       return {
         kind: 'remix', refId: job.id, title: r.plan?.title || job.source.title, ratio: r.ratio || '16:9', durationSec: r.finalDurationSec || 0, rendered, burnedSubtitles: rendered,
         renderUrl: rendered ? `/api/remix/jobs/${job.id}/export?format=mp4&inline=1` : null,
-        source: sourceSpec(job.source), items: (r.timeline || []).map((t) => ({ kind: t.kind, start: t.start, end: t.end, speed: t.speed || 1, title: t.title || null, newStart: t.newStart, newEnd: t.newEnd, section: t.section || null })),
+        source: sourceSpec(job.source), items: (r.timeline || []).map((t) => ({ kind: t.kind, start: t.start, end: t.end, speed: t.speed || 1, title: t.title || null, newStart: t.newStart, newEnd: t.newEnd, section: t.section || null, cta: Boolean(t.cta), channel: t.channel || null })),
         subtitles: (r.subtitles || []).filter((s) => !s.card).map(sub), hook: r.plan?.hook ? { text: r.plan.hook, durationSec: r.styleProfile?.hookDurationSec || 3 } : null,
         sfx: r.sfx || [], narration: r.narration?.lines || [], templateId: r.template?.id || null, transcriptExact: r.transcriptExact ?? null, thumbnail: job.source.thumbnail || null,
+        seo: r.seo || null, thumbnailSet: job.thumbnailSet ? { ...job.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/remix/${job.id}/image.svg?v=${encodeURIComponent(job.thumbnailSet.updatedAt)}` } : null,
       };
     }
     if (kind === 'longform') {
@@ -167,6 +170,7 @@ export class LibraryService {
         kind: 'longform', refId: job.id, title: job.source.title, ratio: '16:9', durationSec: round(cursor), rendered: false, burnedSubtitles: false, renderUrl: null,
         source: sourceSpec(job.source), items, subtitles: (r.subtitles || []).map((s) => ({ start: toNew(s.start), end: toNew(s.end), text: s.text })), hook: null,
         chapters: (r.chapters || []).map((c) => ({ at: toNew(c.at), title: c.title })), transcriptExact: r.transcriptExact ?? null, thumbnail: job.source.thumbnail || null,
+        seo: r.seo || null, thumbnailSet: job.thumbnailSet ? { ...job.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/longform/${job.id}/image.svg?v=${encodeURIComponent(job.thumbnailSet.updatedAt)}` } : null,
       };
     }
     throw new ApiError(400, '알 수 없는 미리보기 종류입니다.');

@@ -185,3 +185,20 @@ label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 4px;
 .library-card .btn-ghost.active { color: var(--warn); }
 .transcript-panel textarea { width: 100%; font-family: inherit; }
 .preview-inline { margin: 12px 0; }
+
+/* ---- 유튜브 최적화 · 썸네일 편집기 ---- */
+.seo-best { font-size: 1.2rem; font-weight: 900; margin-top: 6px; }
+.seo-title { padding: 8px 6px; border-bottom: 1px dashed var(--border); cursor: pointer; } .seo-title:hover { background: var(--primary-soft); border-radius: 8px; }
+.thumb-editor { display: grid; grid-template-columns: 1.1fr .9fr; gap: 16px; }
+.thumb-preview { background: #000; border-radius: 12px; overflow: hidden; display: grid; place-items: center; } .thumb-preview img { width: 100%; max-height: 60vh; object-fit: contain; }
+.thumb-cands { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.thumb-cand { border: 2px solid var(--border); border-radius: 10px; padding: 4px; cursor: pointer; text-align: center; } .thumb-cand.active { border-color: var(--primary); background: var(--primary-soft); }
+.thumb-cand img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #000; }
+.thumb-cand-empty { aspect-ratio: 16 / 9; display: grid; place-items: center; background: var(--surface-2); border-radius: 6px; color: var(--muted); }
+.thumb-capture-box video { border-radius: 10px; background: #000; max-height: 60vh; }
+.player-cta { display: grid; place-items: center; gap: 14px; }
+.player-cta .cta-btn { background: #ff0033; color: #fff; padding: 10px 26px; border-radius: 999px; font-size: .55em; font-weight: 900; box-shadow: 0 6px 20px rgba(255,0,51,.35); }
+.player-cta .cta-icons { font-size: .5em; opacity: .9; }
+.voice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.voice-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; } .voice-card.active { border-color: var(--primary); background: var(--primary-soft); }
+@media (max-width: 1000px) { .thumb-editor { grid-template-columns: 1fr; } }

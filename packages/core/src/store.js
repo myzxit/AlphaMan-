@@ -181,5 +181,13 @@ export function vercelBlobRemote({ token = process.env.BLOB_READ_WRITE_TOKEN, pa
       const j = await res.json();
       if (j.url) url = j.url;
     },
+    // 부속 파일(목소리 샘플 등)을 별도 blob 으로 저장 → 서버리스 인스턴스가 바뀌어도 유지된다. 공개 URL 반환
+    async putFile(name, buffer, contentType = 'application/octet-stream') {
+      const dir = pathname.replace(/[^/]+$/, '');
+      const res = await fetch(`${API}/${dir}files/${name}`, { method: 'PUT', headers: { ...headers, 'x-content-type': contentType, 'x-add-random-suffix': '1' }, body: buffer, signal: AbortSignal.timeout(60000) });
+      if (!res.ok) throw new Error(`blob put file ${res.status}`);
+      const j = await res.json();
+      return j.url;
+    },
   };
 }

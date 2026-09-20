@@ -111,6 +111,40 @@ export function buildApi(app) {
     return { _file: file, mime: 'video/mp4', filename: `${ctx.params.id}.mp4`, inline: ctx.query.download !== '1' };
   });
   r.get('/api/preview/:kind/:refId', async (ctx) => app.library.previewSpec(auth(ctx).id, ctx.params.kind, ctx.params.refId));
+
+  // ---- 유튜브 최적화(제목·태그·설명) + 썸네일 ----
+  const seoRef = (ctx) => {
+    const user = auth(ctx); const { kind, refId } = ctx.params;
+    const col = { shorts: 'clips', remix: 'remixJobs', longform: 'longformJobs' }[kind];
+    const rec = col && app.store.get(col, refId);
+    if (!rec || rec.userId !== user.id) throw new ApiError(404, '작업을 찾을 수 없습니다.');
+    return { user, kind, refId, col, rec, job: kind === 'shorts' ? app.store.get('jobs', rec.jobId) : rec };
+  };
+  r.get('/api/seo/:kind/:refId', async (ctx) => { const { rec } = seoRef(ctx); return rec.seo || rec.result?.seo || null; });
+  r.post('/api/seo/:kind/:refId', async (ctx) => {
+    const { kind, refId, col, rec, job } = seoRef(ctx);
+    const src = job.source || {};
+    const segments = kind === 'shorts' ? rec.subtitles : (rec.result?.subtitles || []);
+    const seo = await app.seo.generate({ kind, title: ctx.body.title || (kind === 'shorts' ? rec.title : rec.result?.plan?.title || src.title), hook: ctx.body.hook || (kind === 'shorts' ? rec.hook?.text : rec.result?.plan?.hook) || '', originalTitle: src.title || '', originalTags: src.tags || [], originalDescription: src.description || '', channel: src.channel || '', segments, genre: rec.genre || rec.result?.genre || 'general', durationSec: kind === 'shorts' ? rec.durationSec : (rec.result?.finalDurationSec || rec.result?.editedDurationSec || 0), language: ctx.body.language || 'ko' });
+    if (kind === 'shorts') app.store.update(col, refId, { seo }); else app.store.update(col, refId, { result: { ...rec.result, seo } });
+    return seo;
+  });
+  r.get('/api/thumbnail/proxy', async (ctx) => {
+    auth(ctx);
+    const url = String(ctx.query.url || '');
+    if (!app.thumbnail.isAllowedProxy(url)) throw new ApiError(400, '허용되지 않은 이미지 주소입니다.');
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new ApiError(res.status === 404 ? 404 : 502, '이미지를 가져오지 못했습니다.');
+    ctx.res.writeHead(200, { 'Content-Type': res.headers.get('content-type') || 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Access-Control-Allow-Origin': '*' });
+    ctx.res.end(Buffer.from(await res.arrayBuffer()));
+    return { _sent: true };
+  });
+  r.get('/api/thumbnail/:kind/:refId', async (ctx) => { const { user, kind, refId } = seoRef(ctx); return { set: app.thumbnail.get(user.id, kind, refId), candidates: await app.thumbnail.candidates(user.id, kind, refId), styles: (await import('@alphaman/core')).THUMB_STYLES, palettes: (await import('@alphaman/core')).THUMB_PALETTES }; });
+  r.post('/api/thumbnail/:kind/:refId/auto', async (ctx) => { const { user, kind, refId } = seoRef(ctx); return app.thumbnail.auto(user.id, kind, refId, ctx.body || {}); });
+  r.put('/api/thumbnail/:kind/:refId', async (ctx) => { const { user, kind, refId } = seoRef(ctx); return app.thumbnail.update(user.id, kind, refId, ctx.body || {}); });
+  r.post('/api/thumbnail/:kind/:refId/frame', async (ctx) => { const { user, kind, refId } = seoRef(ctx); return app.thumbnail.addUserFrame(user.id, kind, refId, { buffer: ctx.raw, at: ctx.headers['x-at'] != null ? Number(ctx.headers['x-at']) : null, mime: ctx.headers['content-type'] || 'image/jpeg' }); });
+  r.get('/api/thumbnail/:kind/:refId/image.svg', async (ctx) => { const { user, kind, refId } = seoRef(ctx); ctx.res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'private, max-age=60' }); ctx.res.end(app.thumbnail.svg(user.id, kind, refId)); return { _sent: true }; });
+  r.get('/api/thumbnail/:kind/:refId/frame/:idx', async (ctx) => { const { user, kind, refId } = seoRef(ctx); const f = app.thumbnail.frameFile(user.id, kind, refId, ctx.params.idx); return { _file: f.path, mime: f.mime, filename: path.basename(f.path), inline: true }; });
   // 업로드한 원본 스트리밍 (미리보기 플레이어 · 브라우저 대본 추출용). 본인 파일만.
   r.get('/api/uploads/:id/stream', async (ctx) => {
     const up = app.store.get('uploads', ctx.params.id);
@@ -129,7 +163,9 @@ export function buildApi(app) {
   });
 
   // ---- 내 목소리 TTS ----
-  r.get('/api/voice/profiles', async (ctx) => ({ profiles: app.voice.list(auth(ctx).id), providers: app.voice.providers() }));
+  r.get('/api/voice/free', async () => ({ voices: app.voice.freeVoices(), providers: app.voice.providers(), styles: (await import('@alphaman/core')).VOICE_STYLES }));
+  r.get('/api/voice/profiles', async (ctx) => ({ profiles: app.voice.list(auth(ctx).id), providers: app.voice.providers(), freeVoices: app.voice.freeVoices() }));
+  r.get('/api/voice/profiles/:id/sample', async (ctx) => { const f = app.voice.sampleFile(auth(ctx).id, ctx.params.id); if (f.redirect) { ctx.res.writeHead(302, { Location: f.redirect }); ctx.res.end(); return { _sent: true }; } return { _file: f.path, mime: f.mime, filename: f.filename, inline: true }; });
   r.post('/api/voice/profiles', async (ctx) => {
     const user = auth(ctx);
     const body = { ...ctx.body };

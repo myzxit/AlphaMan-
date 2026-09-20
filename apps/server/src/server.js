@@ -44,6 +44,7 @@ export function createRequestHandler(app, { webDir = DEFAULT_WEB_DIR } = {}) {
         }
         const ctx = { req, res, headers: req.headers, params: match.params, query: Object.fromEntries(url.searchParams), body, raw, token, user, app };
         const result = await match.handler(ctx);
+        if (result && result._sent) return undefined; // 핸들러가 직접 응답을 보낸 경우
         if (result && result._file) return sendFile(req, res, result);
         if (result && result._raw != null) {
           res.writeHead(200, { 'Content-Type': `${result.mime}; charset=utf-8`, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}` });

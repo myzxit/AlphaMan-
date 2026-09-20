@@ -19,6 +19,8 @@ import { AdminService } from './admin.js';
 import { VoiceService } from './voice.js';
 import { RemixEngine, REMIX_LIMITS, REMIX_DEFAULTS } from './remix.js';
 import { LibraryService, LIBRARY_KINDS } from './library.js';
+import { SeoService } from './seo.js';
+import { ThumbnailService, THUMB_STYLES, THUMB_PALETTES } from './thumbnail.js';
 import { toolAvailability } from './media.js';
 import { LOCALES } from './i18n.js';
 import { CONTENT } from './content.js';
@@ -44,15 +46,17 @@ export class AlphaMan {
     this.support = new SupportService({ store: this.store, notifications: this.notifications });
     this.voice = new VoiceService({ store: this.store, outputDir: this.outputDir });
     this.library = new LibraryService({ store: this.store, notifications: this.notifications });
-    this.shorts = new ShortsEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications, uploadsDir: this.uploadsDir, outputDir: this.outputDir, voice: this.voice, library: this.library });
-    this.longform = new LongformEngine({ store: this.store, credits: this.credits, ai: this.ai, notifications: this.notifications, library: this.library });
+    this.seo = new SeoService({ ai: this.ai });
+    this.thumbnail = new ThumbnailService({ store: this.store, outputDir: this.outputDir, library: this.library });
+    this.shorts = new ShortsEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications, uploadsDir: this.uploadsDir, outputDir: this.outputDir, voice: this.voice, library: this.library, seo: this.seo, thumbnail: this.thumbnail });
+    this.longform = new LongformEngine({ store: this.store, credits: this.credits, ai: this.ai, notifications: this.notifications, library: this.library, seo: this.seo, thumbnail: this.thumbnail });
     this.publish = new PublishService({ store: this.store, notifications: this.notifications });
     this.topic = new TopicService({ store: this.store, ai: this.ai });
     this.tools = new ToolsService({ ai: this.ai });
     this.subtitles = new SubtitleProjects({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications });
     this.discovery = new DiscoveryService({ store: this.store });
     this.pixie = new PixieService({ store: this.store, ai: this.ai, support: this.support });
-    this.remix = new RemixEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, voice: this.voice, notifications: this.notifications, outputDir: this.outputDir, library: this.library });
+    this.remix = new RemixEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, voice: this.voice, notifications: this.notifications, outputDir: this.outputDir, library: this.library, seo: this.seo, thumbnail: this.thumbnail });
     this.admin = new AdminService({ store: this.store, credits: this.credits, auth: this.auth, support: this.support, notifications: this.notifications, publish: this.publish });
 
     this.auth.seedAdmin();
@@ -63,7 +67,7 @@ export class AlphaMan {
     return {
       name: 'AlphaMan', version: VERSION, platform: this.platform, locales: LOCALES,
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,
-      tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), remixLimits: REMIX_LIMITS, libraryKinds: LIBRARY_KINDS,
+      tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), freeVoices: this.voice.freeVoices(), remixLimits: REMIX_LIMITS, libraryKinds: LIBRARY_KINDS, thumbStyles: THUMB_STYLES, thumbPalettes: THUMB_PALETTES,
       // 대본 정확도: 브라우저 Whisper(파일) · 붙여넣은 대본 · 서버 whisper · yt-dlp 유튜브 자막만 사용하고, 추정 대본은 만들지 않는다
       transcript: { simulatedAllowed: process.env.ALPHAMAN_ALLOW_SIMULATED_STT === '1', serverWhisper: Boolean(toolAvailability().whisper), youtubeCaptions: Boolean(toolAvailability().ytdlp) },
       adminEmail: ADMIN_ACCOUNT.email,
@@ -95,6 +99,8 @@ export { semanticSplit } from './subtitles/stt.js';
 export { nextOccurrences } from './publish.js';
 export { TOOLS } from './tools.js';
 export { REMIX_LIMITS, REMIX_DEFAULTS } from './remix.js';
-export { VOICE_STYLES } from './voice.js';
+export { VOICE_STYLES, FREE_VOICES, DEFAULT_FREE_VOICE } from './voice.js';
+export { SeoService, extractKeywords } from './seo.js';
+export { ThumbnailService, THUMB_STYLES, THUMB_PALETTES, composeSvg } from './thumbnail.js';
 export { LIBRARY_KINDS } from './library.js';
 export { parseTranscriptText } from './subtitles/stt.js';

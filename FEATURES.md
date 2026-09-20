@@ -91,6 +91,10 @@
 | 내 목소리로 AI 후킹 보이스 / 재구성 내레이션 | 쇼츠 스튜디오 음성 프로필 선택, 재구성 내레이션(오프닝·마무리/전체) | ✓ | ✓ |
 | 보관함: 내가 만든 영상(쇼츠·재구성·롱폼) 자동 저장, 즐겨찾기/검색/이름/제거, MP4 저장, SNS 업로드 | `library.js` (`#/library`, `/api/library*`), 완료 시 자동 저장 + 기존 작업 동기화, 대시보드 "최근 만든 영상" | ✓ | ✓ |
 | 완성 영상 미리보기 (클립 카드 · 재구성 결과 인라인 · 롱폼 · 보관함) | `player.js` — 렌더 MP4 재생(Range 스트리밍) 또는 원본(유튜브/파일)을 타임라인대로 이어 재생 + 자막·후킹·카드 오버레이, `/api/preview/:kind/:id`, `/api/uploads/:id/stream` | ✓ | ✓ (+ `/api/local/stream` 로컬 파일) |
+| 무료 TTS 목소리 26종(한국어 19 + 영/일/중) 듣기·선택, 내 목소리 프로필 저장·샘플 듣기 | `voice.js FREE_VOICES` (`/api/voice/free`, `/api/voice/profiles/:id/sample`), edge-tts 또는 브라우저 음성(`tts.js`), 샘플 Vercel Blob 보관 | ✓ | ✓ |
+| 영상 마무리 구독·좋아요·알림 CTA 카드 | 쇼츠 `outro` 옵션 + 재구성 타임라인 `cta` 카드, 미리보기 종료 화면, ffmpeg 렌더 시 이어 붙임 | ✓ | ✓ |
+| 유튜브 최적화: 원본과 비슷한 제목 + 추천 제목 후보/설명/태그/해시태그/업로드 시간/체크리스트 | `seo.js` (`/api/seo/:kind/:id`), 클립·재구성·롱폼 자동 생성, `pages-seo.js` 패널 | ✓ | ✓ |
+| 썸네일 자동 제작(원본과 비슷하게 / 장면 자동 선택) + 편집기(장면·캡처·문구·스타일·색상, PNG/SVG) | `thumbnail.js` (`/api/thumbnail/*`), SVG 조합, 유튜브 프레임·ffmpeg 프레임·브라우저 캡처 | ✓ | ✓ (ffmpeg 프레임 추출) |
 | 자막 = 원본 대본 그대로 | `stt.js transcribe` — 브라우저 Whisper(`transcript.js`, `stt-worker.js`) / 붙여넣은 대본(`parseTranscriptText`) / 서버 whisper / yt-dlp 유튜브 자막만 사용, 추정 대본 금지(422 안내), "원본 대본 그대로" 배지 | ✓ | ✓ (yt-dlp 자동 설치로 링크 대본 자동) |
 
 ## 5. 프로그램 버전에서만 추가되는 기능

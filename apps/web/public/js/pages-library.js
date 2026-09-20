@@ -3,6 +3,7 @@ import { get, patch, del, downloadUrl, getToken } from './api.js';
 import { esc, html, raw, toast, confirmDialog, fmtTime, fmtDate, qs, qsa, on } from './ui.js';
 import { openPreview } from './player.js';
 import { exactBadge } from './transcript.js';
+import { seoButtons, bindSeoButtons } from './pages-seo.js';
 
 const auth = (fn) => Object.assign(fn, { requiresAuth: true });
 const KIND_LABEL = { shorts: '✂️ 쇼츠', remix: '🪄 AI 재구성', longform: '🎬 롱폼 컷편집' };
@@ -17,6 +18,7 @@ export const library = auth(async ({ view, params, navigate }) => {
     ${items.length ? raw(`<div class="grid grid-4 library-grid">${items.map(card).join('')}</div>`) : raw('<div class="card"><h3>아직 보관된 영상이 없습니다</h3><p class="muted">쇼츠 스튜디오 · AI 재구성 · 롱폼 컷편집에서 영상을 만들면 완료되는 즉시 여기에 자동으로 저장됩니다.</p><div class="row"><a class="btn btn-primary" href="#/studio">쇼츠 만들기</a><a class="btn" href="#/remix">AI 재구성</a><a class="btn" href="#/longform">롱폼 컷편집</a></div></div>')}`;
   qs('#lib-search').onsubmit = (e) => { e.preventDefault(); navigate(link({ q: qs('#lib-q').value.trim() })); };
   on(view, 'click', '[data-preview]', (e, t) => openPreview({ libraryId: t.dataset.preview }));
+  bindSeoButtons(view);
   on(view, 'click', '[data-fav]', async (e, t) => { const it = items.find((x) => x.id === t.dataset.fav); try { await patch(`/api/library/${it.id}`, { favorite: !it.favorite }); it.favorite = !it.favorite; t.textContent = it.favorite ? '★' : '☆'; t.classList.toggle('active', it.favorite); } catch (err) { toast(err.message, 'error'); } });
   on(view, 'click', '[data-rename]', async (e, t) => { const it = items.find((x) => x.id === t.dataset.rename); const title = prompt('새 제목', it.title); if (title && title !== it.title) { try { await patch(`/api/library/${it.id}`, { title }); navigate(`${link({})}&r=${Date.now()}`); } catch (err) { toast(err.message, 'error'); } } });
   on(view, 'click', '[data-remove]', async (e, t) => { if (!(await confirmDialog('보관함에서 뺄까요? (원본 작업은 남습니다)'))) return; try { await del(`/api/library/${t.dataset.remove}`); t.closest('.library-card').remove(); toast('보관함에서 제거했습니다.'); } catch (err) { toast(err.message, 'error'); } });
@@ -32,7 +34,7 @@ export const library = auth(async ({ view, params, navigate }) => {
 });
 
 function card(it) {
-  const thumb = it.thumbnail ? `background-image:url('${esc(it.thumbnail)}')` : '';
+  const thumb = it.thumbnail ? `background-image:url('${esc(it.thumbnail.startsWith('/') ? downloadUrl(it.thumbnail) : it.thumbnail)}')` : '';
   const r = (it.ratio || '16:9').replace(':', '-');
   return `<div class="card library-card" data-id="${it.id}">
     <div class="clip-preview r-${r}" style="${thumb};cursor:pointer;max-height:260px" data-preview="${it.id}" title="미리보기"><div class="library-play">▶</div><div class="zoom">${fmtTime(it.durationSec)}</div>${it.rendered ? '<div class="hook" style="right:auto">MP4</div>' : ''}</div>
@@ -40,5 +42,5 @@ function card(it) {
       <div class="tiny muted">${esc(KIND_LABEL[it.kind] || it.kind)} · ${esc(it.ratio || '')} · ${fmtDate(it.savedAt)}</div>
       <div class="tiny muted">원본: ${esc(it.sourceTitle || '-')}</div></div>
     <div class="chips">${it.subtitleCount ? `<span class="chip">자막 ${it.subtitleCount}줄</span>` : ''}${exactBadge(it.transcriptExact)}${it.extra?.reference ? '<span class="chip">참고 영상</span>' : ''}${it.extra?.targetMinutes ? `<span class="chip">${it.extra.targetMinutes}분 재구성</span>` : ''}${it.extra?.removedSec != null ? `<span class="chip">공백 ${it.extra.removedSec}초 제거</span>` : ''}</div>
-    <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-preview="${it.id}">▶ 미리보기</button>${it.rendered ? `<button class="btn btn-sm" data-download="${it.id}">MP4 저장</button>` : ''}<a class="btn btn-sm" href="${it.kind === 'shorts' ? `#/studio/${it.jobId}` : it.kind === 'remix' ? `#/remix/${it.refId}` : `#/longform/${it.refId}`}">작업 열기</a>${it.kind === 'shorts' ? `<button class="btn btn-sm" data-publish="${it.refId}">SNS 업로드</button>` : ''}<button class="btn btn-sm" data-rename="${it.id}">이름</button><button class="btn btn-sm btn-danger" data-remove="${it.id}">제거</button></div></div>`;
+    <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-preview="${it.id}">▶ 미리보기</button>${seoButtons(it.kind, it.refId)}${it.rendered ? `<button class="btn btn-sm" data-download="${it.id}">MP4 저장</button>` : ''}<a class="btn btn-sm" href="${it.kind === 'shorts' ? `#/studio/${it.jobId}` : it.kind === 'remix' ? `#/remix/${it.refId}` : `#/longform/${it.refId}`}">작업 열기</a>${it.kind === 'shorts' ? `<button class="btn btn-sm" data-publish="${it.refId}">SNS 업로드</button>` : ''}<button class="btn btn-sm" data-rename="${it.id}">이름</button><button class="btn btn-sm btn-danger" data-remove="${it.id}">제거</button></div></div>`;
 }

@@ -21,8 +21,11 @@ export const REMIX_DEFAULTS = Object.freeze({
   newSubtitles: true,          // 새 자막 (템플릿)
   newSfx: true,                // 새 효과음 큐
   newBgm: true,                // 새 배경음악
-  narration: 'none',           // none | intro | full  (내 목소리 TTS 내레이션)
-  voiceProfileId: null,
+  narration: 'none',           // none | intro | full  (TTS 내레이션: 내 목소리 또는 무료 목소리)
+  voiceProfileId: null,        // 내 목소리 프로필 (없으면 voiceId 의 무료 한국어 목소리)
+  voiceId: null,               // 무료 목소리 id (없으면 기본 '선희')
+  outro: true,                 // 영상 마무리 구독·좋아요·알림 카드
+  outroText: '구독 · 좋아요 · 알림 설정 🔔',
   template: 'auto',
   ratio: 'auto',              // auto = 참고 영상이 있으면 참고 영상 비율, 없으면 원본 비율
   language: 'ko',
@@ -36,8 +39,8 @@ const SFX_LIBRARY = ['whoosh', 'pop', 'ding', 'boom', 'click', 'riser', 'swoosh'
 const BGM_LIBRARY = { education: 'lofi-focus', interview: 'warm-acoustic', info: 'upbeat-corporate', gaming: 'edm-drive', vlog: 'sunny-pop' };
 
 export class RemixEngine {
-  constructor({ store, credits, ai, translate, voice, notifications, outputDir, library = null }) {
-    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.notifications = notifications; this.outputDir = outputDir; this.library = library;
+  constructor({ store, credits, ai, translate, voice, notifications, outputDir, library = null, seo = null, thumbnail = null }) {
+    this.store = store; this.credits = credits; this.ai = ai; this.translate = translate; this.voice = voice; this.notifications = notifications; this.outputDir = outputDir; this.library = library; this.seo = seo; this.thumbnail = thumbnail;
     this.speed = Number(process.env.ALPHAMAN_JOB_SPEED || 1);
   }
 
@@ -53,7 +56,7 @@ export class RemixEngine {
     if (!(target >= REMIX_LIMITS.minMinutes && target <= REMIX_LIMITS.maxMinutes)) throw new ApiError(400, `목표 길이는 ${REMIX_LIMITS.minMinutes}~${REMIX_LIMITS.maxMinutes}분 사이여야 합니다.`);
     if (!['none', 'intro', 'full'].includes(opts.narration)) throw new ApiError(400, '내레이션 모드가 올바르지 않습니다.');
     if (!['auto', '16:9', '9:16', '1:1', '4:5'].includes(opts.ratio)) throw new ApiError(400, '지원하지 않는 비율입니다.');
-    if (opts.narration !== 'none') { if (!opts.voiceProfileId) throw new ApiError(400, '내레이션에 사용할 음성 프로필을 선택해주세요.'); this.voice.get(userId, opts.voiceProfileId); }
+    if (opts.narration !== 'none') this.voice.resolve(userId, opts); // 내 목소리 프로필이 없으면 무료 목소리로 내레이션
 
     let source;
     if (uploadId) {
@@ -73,7 +76,7 @@ export class RemixEngine {
       let meta = { title: `${parsed.platform} 영상 ${parsed.id}`, channel: null, thumbnail: null, durationSec: null };
       if (parsed.platform === 'youtube') meta = await fetchYoutubeMeta(parsed.id);
       const est = Number(options.estimatedDurationSec);
-      source = { type: parsed.platform, url: parsed.url, videoId: parsed.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, isShorts, durationSec: meta.durationSec || (est > 0 ? est : (isShorts ? 45 : 600)), notice: parsed.notice || null };
+      source = { type: parsed.platform, url: parsed.url, videoId: parsed.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, isShorts, durationSec: meta.durationSec || (est > 0 ? est : (isShorts ? 45 : 600)), notice: parsed.notice || null, tags: meta.tags || [], description: meta.description || '' };
     } else throw new ApiError(400, '영상 링크(롱폼/쇼츠) 또는 파일 중 하나를 올려주세요.');
 
     let reference = null;
@@ -143,8 +146,9 @@ export class RemixEngine {
     this._log(jobId, 'rendering', 88, '렌더링 중');
     const render = await this.render({ job, plan, rebuild, cleaning });
 
+    const seo = this.seo ? await this.seo.generate({ kind: 'remix', title: plan.title, hook: plan.hook, originalTitle: source.title, originalTags: source.tags || [], originalDescription: source.description || '', channel: source.channel || '', segments: stt.segments, genre, durationSec: plan.finalDurationSec, language: opts.language }).catch(() => null) : null;
     const result = {
-      genre, styleProfile, cleaning, plan, ...rebuild, render, transcriptEngine: stt.engine, transcriptExact: stt.exact !== false,
+      genre, styleProfile, cleaning, plan, ...rebuild, render, seo, transcriptEngine: stt.engine, transcriptExact: stt.exact !== false,
       originalDurationSec: source.durationSec, targetDurationSec: opts.targetMinutes * 60, finalDurationSec: plan.finalDurationSec,
       summary: `${Math.round(source.durationSec / 60)}분 원본 → ${Math.round(plan.finalDurationSec / 60)}분 재구성 · 구간 ${plan.keep.length}개 · 자막 ${rebuild.subtitles.length}줄 · 효과음 ${rebuild.sfx.length}개${rebuild.narration ? ` · 내레이션 ${rebuild.narration.lines.length}줄` : ''}`,
     };
@@ -152,6 +156,7 @@ export class RemixEngine {
     this._log(jobId, 'done', 100, '재구성 완료');
     const done = this.store.update('remixJobs', jobId, { status: 'done', completedAt: new Date().toISOString() });
     if (this.library) this.library.addRemixJob(done); // 보관함 자동 저장
+    if (this.thumbnail) await this.thumbnail.auto(job.userId, 'remix', jobId).catch((e) => console.warn('[remix] 썸네일 자동 제작 실패:', e.message));
     this.notifications?.push(job.userId, { type: 'remix.done', title: 'AI 재구성 완료', body: `${result.summary} · 보관함에서 미리 볼 수 있어요.`, link: `#/remix/${jobId}` });
   }
 
@@ -239,7 +244,7 @@ export class RemixEngine {
     }
     const outline = styleProfile?.structure?.length ? styleProfile.structure : (base.outline?.length ? base.outline : ['후킹', '본문', '마무리']);
     // 2) 타임라인 구성: 원본이 짧으면(쇼츠 등) 카드·리플레이·슬로모션·요약으로 목표 길이까지 확장
-    const timeline = composeTimeline({ keep, segments, targetSec, speedFactor, outline, hook: String(base.hook || source.title), source, styleProfile });
+    const timeline = composeTimeline({ keep, segments, targetSec, speedFactor, outline, hook: String(base.hook || source.title), source, styleProfile, outro: opts.outro === false ? null : { text: opts.outroText || REMIX_DEFAULTS.outroText, channel: source.channel || null } });
     const finalDurationSec = round(timeline.reduce((s, t) => s + (t.newEnd - t.newStart), 0));
     const sourceUsedSec = round(keep.reduce((s, k) => s + (k.end - k.start), 0));
     return { hook: String(base.hook || source.title).slice(0, 120), keep, timeline, outline, title: String(base.title || `${source.title} (재구성)`).slice(0, 100), description: String(base.description || '').slice(0, 500), pacing, speedFactor, finalDurationSec, targetSec, sourceUsedSec, extended: finalDurationSec > sourceUsedSec + 1, stretchFactor: round(finalDurationSec / Math.max(1, source.durationSec)), reorder: opts.reorder, engine: this.ai.lastMode };
@@ -282,10 +287,10 @@ export class RemixEngine {
       const lines = await this.writeNarration({ plan, subtitles, mode: opts.narration, tone: styleProfile?.tone || 'friendly' });
       const renders = [];
       for (const [i, line] of lines.entries()) {
-        const r = await this.voice.synthesize(job.userId, { profileId: opts.voiceProfileId, text: line.text, style: i === 0 ? 'hook' : 'natural', outputName: `remix-${job.id.slice(0, 8)}-${i + 1}` });
+        const r = await this.voice.synthesize(job.userId, { profileId: opts.voiceProfileId || null, voiceId: opts.voiceId || null, text: line.text, style: i === 0 ? 'hook' : 'natural', outputName: `remix-${job.id.slice(0, 8)}-${i + 1}` });
         renders.push({ at: line.at, text: line.text, audioPath: r.audioPath, engine: r.engine, durationSec: r.durationSec });
       }
-      narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId, lines: renders, replacesOriginalVoice: opts.narration === 'full' && !opts.keepOriginalVoice };
+      narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId || null, voice: this.voice.resolve(job.userId, opts), lines: renders, replacesOriginalVoice: opts.narration === 'full' && !opts.keepOriginalVoice };
     }
 
     return { timeline, template: { id: template.id, name: template.name, font: template.font, position: styleProfile?.subtitlePosition || 'bottom' }, subtitles, sfx, bgm, zoom, transitions, colorGrade, narration, ratio, extended: plan.extended, stretchFactor: plan.stretchFactor, mirroredFromReference: styleProfile ? styleProfile.mirrored : [] };
@@ -375,7 +380,8 @@ function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
 // 유지 구간(keep)을 새 타임라인으로 배치하고, 목표 길이에 못 미치면 카드·리플레이·슬로모션으로 확장한다.
 // 참고 영상 프로필(styleProfile)이 있으면 그 영상의 섹션 구조·구간 길이 비율·후킹 길이·카드 스타일을 그대로 따라 배치한다.
 // 항목 kind: source(원본 구간) | replay(하이라이트 다시 보기) | slowmo(슬로모션 리플레이) | card(챕터/타이틀 카드)
-export function composeTimeline({ keep, segments, targetSec, speedFactor = 1, outline = [], hook = '', source, styleProfile = null }) {
+export function composeTimeline({ keep, segments, targetSec, speedFactor = 1, outline = [], hook = '', source, styleProfile = null, outro = null }) {
+  const outroCard = () => (outro ? { kind: 'card', title: outro.text || '구독 · 좋아요 · 알림 설정 🔔', dur: 3, cta: true, channel: outro.channel || null } : { kind: 'card', title: '끝까지 봐주셔서 감사합니다', dur: 3 });
   const items = []; let cursor = 0;
   const push = (item) => { const dur = item.kind === 'card' ? item.dur : (item.end - item.start) / (item.speed || 1); items.push({ ...item, newStart: round(cursor), newEnd: round(cursor + dur) }); cursor += dur; };
   const total = () => cursor;
@@ -399,7 +405,7 @@ export function composeTimeline({ keep, segments, targetSec, speedFactor = 1, ou
   } else {
     keep.forEach((k, i) => { if (i === 0 && cards) push({ kind: 'card', title: hook || source.title, dur: 3 }); push({ kind: 'source', start: k.start, end: k.end, speed: speedFactor, reason: k.reason }); });
   }
-  if (total() >= targetSec * 0.95) { if (cards) push({ kind: 'card', title: '끝까지 봐주셔서 감사합니다', dur: 3 }); return items; }
+  if (total() >= targetSec * 0.95) { if (cards || outro) push(outroCard()); return items; }
   // 확장 1: 하이라이트 문장 리플레이 (키워드 문장 우선)
   const KEY = /핵심|비밀|놀라|반전|중요|결과|진짜|충격|방법|이유|\?|!/;
   const highlights = segments.filter((s) => s.end - s.start >= 1.5).sort((a, b) => (KEY.test(b.text) ? 1 : 0) - (KEY.test(a.text) ? 1 : 0) || b.text.length - a.text.length);
@@ -419,7 +425,7 @@ export function composeTimeline({ keep, segments, targetSec, speedFactor = 1, ou
   // 초과분 정리: 마지막 항목을 목표에 맞춰 자른다
   const last = items[items.length - 1];
   if (last && cursor > targetSec) { const over = cursor - targetSec; if (last.kind === 'card') last.dur = Math.max(1, last.dur - over); else last.end = Math.max(last.start + 1, last.end - over * (last.speed || 1)); last.newEnd = round(Math.max(last.newStart + 1, last.newEnd - over)); }
-  if (cards) push({ kind: 'card', title: '끝까지 봐주셔서 감사합니다', dur: 3 });
+  if (cards || outro) push(outroCard());
   return items;
 }
 function round(n) { return Math.round(n * 100) / 100; }

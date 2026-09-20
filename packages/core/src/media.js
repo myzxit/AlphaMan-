@@ -132,13 +132,22 @@ export async function fetchYoutubeMeta(videoId) {
 }
 
 // 실제 클립 렌더링 (프로그램 버전/ffmpeg 설치 환경). ffmpeg 이 없으면 렌더 계획(JSON)만 남긴다.
-export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1 }) {
+export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1, outro = null }) {
   const dims = ratio === '9:16' ? '1080:1920' : ratio === '1:1' ? '1080:1080' : ratio === '4:5' ? '1080:1350' : '1920:1080';
   const [w, h] = dims.split(':');
-  const filters = [`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`];
+  const filters = [`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'setsar=1'];
   if (subtitlePath) filters.push(`subtitles='${subtitlePath.replace(/'/g, "\\'")}'`);
   if (speedUp !== 1) filters.push(`setpts=PTS/${speedUp}`);
-  const args = ['-y', '-ss', String(start), '-to', String(end), '-i', input, '-vf', filters.join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', output];
+  let args;
+  if (outro && outro.durationSec > 0) {
+    // 마무리 구독 카드: 클립 뒤에 CTA 카드(검정 배경 + 큰 글씨 + 무음)를 이어 붙인다
+    const text = String(outro.text || '구독 · 좋아요 · 알림 설정').replace(/[\\':]/g, ' ');
+    const d = outro.durationSec;
+    const fc = `[0:v]${filters.join(',')}[v0];[0:a]asetpts=PTS-STARTPTS[a0];color=c=0x111111:s=${w}x${h}:d=${d}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(Number(h) / 16)}:x=(w-text_w)/2:y=(h-text_h)/2,drawbox=x=(iw-${Math.round(Number(w) * 0.4)})/2:y=ih*0.62:w=${Math.round(Number(w) * 0.4)}:h=${Math.round(Number(h) / 14)}:color=0xff0033@1:t=fill,drawtext=text='구독':fontcolor=white:fontsize=${Math.round(Number(h) / 24)}:x=(w-text_w)/2:y=h*0.62+${Math.round(Number(h) / 60)}[v1];anullsrc=r=48000:cl=stereo,atrim=0:${d},asetpts=PTS-STARTPTS[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[vo][ao]`;
+    args = ['-y', '-ss', String(start), '-to', String(end), '-i', input, '-filter_complex', fc, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', output];
+  } else {
+    args = ['-y', '-ss', String(start), '-to', String(end), '-i', input, '-vf', filters.join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', output];
+  }
   if (!which('ffmpeg')) return { rendered: false, plan: { bin: 'ffmpeg', args } };
   fs.mkdirSync(path.dirname(output), { recursive: true });
   await run('ffmpeg', args);

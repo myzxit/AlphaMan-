@@ -72,7 +72,12 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
   const enter = (i, t) => {
     cur = i; const it = items[i]; if (!it) return;
     kindEl.classList.toggle('hidden', it.kind === 'source'); kindEl.textContent = { replay: '↻ 하이라이트 리플레이', slowmo: '🐢 슬로모션', card: '🃏 카드' }[it.kind] || '';
-    if (it.kind === 'card') { cardEl.classList.remove('hidden'); cardEl.innerHTML = `<div>${esc(it.title || '')}</div>${it.section ? `<div class="tiny">${esc(it.section)}</div>` : ''}`; media.pause(); cardElapsed = t - it.newStart; cardStartedAt = performance.now(); }
+    if (it.kind === 'card') {
+      cardEl.classList.remove('hidden');
+      // 마무리 구독 카드(CTA): 구독 버튼 · 좋아요 · 알림 아이콘을 실제 종료 화면처럼 보여준다
+      cardEl.innerHTML = it.cta ? `<div class="player-cta"><div>${esc(it.title || '구독 · 좋아요 · 알림 설정')}</div><div class="cta-btn">▶ 구독${it.channel ? ` · ${esc(it.channel)}` : ''}</div><div class="cta-icons">👍 좋아요 &nbsp; 🔔 알림 설정 &nbsp; 💬 댓글</div></div>` : `<div>${esc(it.title || '')}</div>${it.section ? `<div class="tiny">${esc(it.section)}</div>` : ''}`;
+      media.pause(); cardElapsed = t - it.newStart; cardStartedAt = performance.now();
+    }
     else { cardEl.classList.add('hidden'); const speed = it.speed || 1; media.rate(speed); media.seek(it.start + (t - it.newStart) * speed); if (playing) media.play(); }
   };
   const drawOverlays = (t) => {
