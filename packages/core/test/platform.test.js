@@ -308,6 +308,23 @@ test('알림 삭제 · 로그인: 같은 이메일 레코드가 여러 개여도
   a.close();
 });
 
+test('저장소 병합 후 중복 가입 비밀번호: 두 인스턴스에서 다른 비밀번호로 가입된 같은 이메일은 어느 비밀번호로도 로그인되고, 로그인한 비밀번호가 기본이 된다', async () => {
+  const { mergeSnapshots } = await import('../src/store.js');
+  const a = app(); const b = app();
+  a.auth.signup({ email: 'two@test.com', password: 'first-pw', name: 'A' });
+  await new Promise((r) => setTimeout(r, 5));
+  b.auth.signup({ email: 'two@test.com', password: 'second-pw', name: 'B' });
+  const merged = mergeSnapshots(a.store.data, b.store.data);
+  assert.equal(merged.users.filter((u) => u.email === 'two@test.com').length, 1, '이메일당 하나');
+  const c = app(); c.store.data = mergeSnapshots(c.store.data, merged);
+  assert.equal(c.auth.login({ email: 'two@test.com', password: 'first-pw' }).user.email, 'two@test.com');
+  assert.equal(c.auth.login({ email: 'two@test.com', password: 'second-pw' }).user.email, 'two@test.com');
+  assert.equal(c.store.findOne('users', (u) => u.email === 'two@test.com').altPasswordHashes.length, 0, '로그인한 비밀번호가 기본으로 승격');
+  assert.equal(c.auth.login({ email: 'two@test.com', password: 'second-pw' }).user.altPasswordHashes, undefined, '해시는 응답에 노출되지 않는다');
+  assert.throws(() => c.auth.login({ email: 'two@test.com', password: 'first-pw' }), (e) => /비밀번호/.test(e.message));
+  a.close(); b.close(); c.close();
+});
+
 test('시스템: 상태 점검, 오류 로그, 백업/복원(병합), 사용량', async () => {
   const a = app();
   const { user } = a.auth.signup({ email: 'sys@test.com', password: 'secret1', name: 'Sys' });

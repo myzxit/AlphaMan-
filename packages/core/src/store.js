@@ -35,6 +35,8 @@ export function mergeSnapshots(a, b) {
         const prev = u.email ? byEmail.get(u.email) : null;
         if (!prev) { if (u.email) byEmail.set(u.email, u); continue; }
         if (!prev.passwordHash && u.passwordHash) prev.passwordHash = u.passwordHash;
+        // 두 기록의 비밀번호가 다르면(다른 인스턴스에서 다시 가입한 경우) 나중 비밀번호도 함께 보관해 어느 쪽으로도 로그인되게 한다
+        else if (u.passwordHash && u.passwordHash !== prev.passwordHash) prev.altPasswordHashes = [...new Set([...(prev.altPasswordHashes || []), ...(u.altPasswordHashes || []), u.passwordHash])].slice(-5);
         if (u.role === 'admin') prev.role = 'admin';
       }
       out[c] = out[c].filter((u) => !u.email || byEmail.get(u.email) === u);

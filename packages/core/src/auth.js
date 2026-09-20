@@ -88,7 +88,7 @@ export class AuthService {
 
   publicUser(user) {
     if (!user) return null;
-    const { passwordHash, ...rest } = user;
+    const { passwordHash, altPasswordHashes, ...rest } = user;
     return { ...rest, isAdmin: user.role === 'admin', ...this.credits.summary(user.id) };
   }
 
@@ -118,13 +118,16 @@ export class AuthService {
     // 같은 이메일 레코드가 여러 개(서버 인스턴스 병합 전 중복 가입)여도 비밀번호가 맞는 레코드로 로그인한다
     const candidates = this.store.find('users', (u) => u.email === email);
     if (!candidates.length) throw new ApiError(401, '가입된 이메일이 아닙니다. 이메일을 확인하거나 무료로 가입해주세요. (저장소 전환 이전에 만든 계정은 남아 있지 않을 수 있습니다)');
-    const user = candidates.find((u) => u.passwordHash && verifyPassword(password, u.passwordHash));
+    const matches = (u) => (u.passwordHash && verifyPassword(password, u.passwordHash)) || (u.altPasswordHashes || []).some((h) => verifyPassword(password, h));
+    const user = candidates.find(matches);
     if (!user) {
       const social = candidates.find((u) => !u.passwordHash && u.provider && u.provider !== 'password');
       if (social) throw new ApiError(401, `이 이메일은 ${social.provider} 간편 로그인으로 가입된 계정입니다. 같은 방법으로 로그인해주세요.`);
       throw new ApiError(401, '비밀번호가 올바르지 않습니다. 비밀번호를 잊으셨다면 로그인 화면의 "비밀번호 재설정 요청"을 이용하세요.');
     }
     if (user.status === 'banned') throw new ApiError(403, '이용이 제한된 계정입니다. 관리자에게 문의하세요.');
+    // 병합 시 보관된 다른 비밀번호로 로그인했다면 그 비밀번호를 기본으로 승격한다
+    if (!(user.passwordHash && verifyPassword(password, user.passwordHash))) this.store.update('users', user.id, { passwordHash: hashPassword(password), altPasswordHashes: [] });
     return this.createSession(user);
   }
 
@@ -206,9 +209,10 @@ export class AuthService {
   changePassword(userId, { currentPassword, newPassword }) {
     const user = this.store.get('users', userId);
     if (!user) throw new ApiError(404, '사용자를 찾을 수 없습니다.');
-    if (user.passwordHash && !verifyPassword(currentPassword, user.passwordHash)) throw new ApiError(401, '현재 비밀번호가 올바르지 않습니다.');
+    const okCur = (user.passwordHash && verifyPassword(currentPassword, user.passwordHash)) || (user.altPasswordHashes || []).some((h) => verifyPassword(currentPassword, h));
+    if (user.passwordHash && !okCur) throw new ApiError(401, '현재 비밀번호가 올바르지 않습니다.');
     if (!newPassword || newPassword.length < 6) throw new ApiError(400, '새 비밀번호는 6자 이상이어야 합니다.');
-    this.store.update('users', userId, { passwordHash: hashPassword(newPassword) });
+    this.store.update('users', userId, { passwordHash: hashPassword(newPassword), altPasswordHashes: [] });
     return true;
   }
 
