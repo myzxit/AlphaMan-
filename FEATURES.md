@@ -134,6 +134,10 @@
 | 사용량 관리 (저장공간·활성 작업·결과물·AI 사용량) | `system.js UsageService` (`/api/usage`), 설정 → 사용량 | ✓ | ✓ |
 | 실결제 (토스페이먼츠 결제창 v2 + 서버 승인 · Stripe Checkout) — 키 없으면 가짜 결제 없이 503 | `payments.js PaymentService` (`/api/billing/config|orders|toss/confirm|toss/webhook|stripe/session|stripe/confirm`), `#/pay/success`, `#/pay/fail` | ✓ | ✓ |
 | 비밀번호 오류 개선 (미가입/소셜 계정/비밀번호 불일치 구분, 중복 레코드 허용, 재설정 요청) | `auth.js login/requestPasswordReset` (`/api/auth/reset-request`), 로그인 페이지 | ✓ | ✓ |
+| 브라우저 렌더링: ffmpeg 없는 웹사이트에서도 업로드 원본으로 실제 영상 파일(MP4/WebM) 생성 — 박힌 자막 크롭 · 새 자막 · 후킹 · 구독 카드 · TTS 믹싱, 조각 업로드로 보관함 저장 | `render-browser.js`, `library.js saveBrowserRender/_libRender` (`POST /api/library/:id/render`, `/api/library/:id/video` 리다이렉트) | ✓ | ✓ |
+| PC 프로그램 렌더 도구 자동 설치 (ffmpeg · ffprobe · yt-dlp) + 설치 진행률 배지 | `apps/desktop/main.cjs ensureFfmpeg/ensureYtDlp`, `app.js` toolsState 폴링 | – | ✓ |
+| 무료 TTS 실제 MP3 (서버리스 포함): Edge 읽어주기 버전 거부(403) 자동 우회 · 시계 보정 | `edgetts.js` (버전 목록 순회, Date 헤더 skew) | ✓ | ✓ |
+| 썸네일 이미지 표시: SVG 안에 배경 사진 base64 인라인, 캡처 프레임 Blob 보관 | `thumbnail.js svgInline/_loadImage/addUserFrame` | ✓ | ✓ |
 
 ## 5. 프로그램 버전에서만 추가되는 기능
 

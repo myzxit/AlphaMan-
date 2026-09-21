@@ -52,7 +52,7 @@ export class AlphaMan {
     this.translate = new TranslateService(this.ai);
     this.support = new SupportService({ store: this.store, notifications: this.notifications });
     this.voice = new VoiceService({ store: this.store, outputDir: this.outputDir });
-    this.library = new LibraryService({ store: this.store, notifications: this.notifications });
+    this.library = new LibraryService({ store: this.store, notifications: this.notifications, outputDir: this.outputDir });
     this.seo = new SeoService({ ai: this.ai });
     this.thumbnail = new ThumbnailService({ store: this.store, outputDir: this.outputDir, library: this.library });
     this.activity = new ActivityService({ store: this.store, notifications: this.notifications });

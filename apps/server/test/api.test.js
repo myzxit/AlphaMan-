@@ -220,3 +220,32 @@ test('API: 플랫폼 라우트 — 프로젝트/작업 센터/파일 관리자/�
     assert.match(home, /og:title/); assert.match(home, /rel="canonical"/); assert.match(home, /twitter:card/);
   } finally { await t.close(); }
 });
+
+test('API: 브라우저 렌더 업로드(조각) → /api/library/:id/video 스트리밍, 썸네일 image.svg 인라인', async () => {
+  const t = await boot();
+  try {
+    const su = await t.call('POST', '/api/auth/signup', { email: 'render@test.com', password: 'secret1', name: 'R' });
+    const tok = su.data.token;
+    const job = await t.call('POST', '/api/shorts/jobs', { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120 }, transcriptText: '1\n00:00:00,000 --> 00:00:02,000\n안녕\n\n2\n00:00:02,500 --> 00:00:05,000\n테스트\n' }, tok);
+    assert.equal(job.status, 200);
+    await new Promise((r) => setTimeout(r, 1500));
+    const lib = await t.call('GET', '/api/library?kind=shorts', undefined, tok);
+    const item = lib.data.items[0]; assert.ok(item);
+    const bytes = Buffer.alloc(9000, 1);
+    const a1 = await t.call('POST', `/api/library/${item.id}/render`, bytes.subarray(0, 4000), tok, { 'content-type': 'video/webm', 'x-upload-id': 'abc', 'x-part': '0', 'x-parts': '2' });
+    assert.equal(a1.status, 200); assert.equal(a1.data.done, false);
+    const a2 = await t.call('POST', `/api/library/${item.id}/render`, bytes.subarray(4000), tok, { 'content-type': 'video/webm', 'x-upload-id': 'abc', 'x-part': '1', 'x-parts': '2' });
+    assert.equal(a2.data.done, true); assert.equal(a2.data.size, 9000);
+    const v = await fetch(`${t.base}/api/library/${item.id}/video`, { headers: { authorization: `Bearer ${tok}`, range: 'bytes=0-99' } });
+    assert.equal(v.status, 206); assert.equal(v.headers.get('content-type'), 'video/webm');
+    const other = await t.call('POST', `/api/library/${item.id}/render`, bytes.subarray(0, 10), (await t.call('POST', '/api/auth/login', { email: 'hhudeu66@gmail.com', password: 'an1823037' })).data.token, { 'content-type': 'video/webm', 'x-upload-id': 'x', 'x-part': '0', 'x-parts': '1' });
+    assert.equal(other.status, 404, '다른 사용자의 보관함에는 올릴 수 없다');
+    const pv = await t.call('GET', `/api/preview/shorts/${item.refId}`, undefined, tok);
+    assert.equal(pv.data.rendered, true); assert.equal(pv.data.renderedBy, 'browser');
+    const fr = await t.call('POST', `/api/thumbnail/shorts/${item.refId}/frame`, Buffer.from('89504e470d0a1a0a', 'hex'), tok, { 'content-type': 'image/png', 'x-at': '1' });
+    assert.equal(fr.status, 200);
+    await t.call('PUT', `/api/thumbnail/shorts/${item.refId}`, { candidateId: fr.data.id, headline: '헤드', style: 'bold' }, tok);
+    const svg = await fetch(`${t.base}/api/thumbnail/shorts/${item.refId}/image.svg`, { headers: { authorization: `Bearer ${tok}` } });
+    assert.equal(svg.status, 200); assert.match(await svg.text(), /data:image\/png;base64,/);
+  } finally { await t.close(); }
+});

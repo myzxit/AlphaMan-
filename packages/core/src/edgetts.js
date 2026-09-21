@@ -6,16 +6,19 @@ import net from 'node:net';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
-const CHROMIUM_FULL_VERSION = '130.0.2849.68';
+// Microsoft 가 오래된 Edge 버전 문자열을 403 으로 거부하므로 최신 버전부터 순서대로 시도하고, 성공한 버전을 기억한다
+const CHROMIUM_VERSIONS = [process.env.ALPHAMAN_EDGE_VERSION, '143.0.3650.75', '138.0.3351.65', '134.0.3124.72', '130.0.2849.68'].filter(Boolean);
+let workingVersion = null;
 const HOST = 'speech.platform.bing.com';
 const PATH = '/consumer/speech/synthesize/readaloud/edge/v1';
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
+let clockSkewSec = 0; // 서버 Date 헤더와의 차이 (Sec-MS-GEC 는 5분 단위 시각에 묶인다)
 
 export function isEdgeTtsDisabled() { return process.env.ALPHAMAN_EDGE_TTS === 'off'; }
 
 // Sec-MS-GEC: 5분 단위 Windows 파일 시간 + 토큰의 SHA-256
 function secMsGec() {
-  let s = Math.floor(Date.now() / 1000) + 11644473600;
+  let s = Math.floor(Date.now() / 1000 + clockSkewSec) + 11644473600;
   s -= s % 300;
   const ticks = BigInt(s) * 10000000n;
   return createHash('sha256').update(`${ticks}${TRUSTED_CLIENT_TOKEN}`).digest('hex').toUpperCase();
@@ -69,16 +72,27 @@ function parseFrames(buf) {
   return { frames, rest: buf.subarray(off) };
 }
 
-// text → MP3 Buffer
-export async function edgeSynthesize({ text, voice = 'ko-KR-SunHiNeural', rate = '+0%', pitch = '+0Hz', volume = '+0%', timeoutMs = 20000 }) {
+// text → MP3 Buffer. 403(버전 거부·시계 차이)이면 서버 Date 로 시계를 맞추고 다음 버전 문자열로 다시 시도한다
+export async function edgeSynthesize(opts) {
   if (isEdgeTtsDisabled()) throw new Error('edge tts disabled');
+  const versions = workingVersion ? [workingVersion, ...CHROMIUM_VERSIONS.filter((v) => v !== workingVersion)] : CHROMIUM_VERSIONS;
+  let lastErr = null;
+  for (const version of versions) {
+    try { const out = await edgeSynthesizeWith({ ...opts, version }); workingVersion = version; return out; }
+    catch (err) { lastErr = err; if (!err.forbidden) throw err; if (err.serverDate) { const skew = Math.round((new Date(err.serverDate).getTime() - Date.now()) / 1000); if (Number.isFinite(skew)) clockSkewSec = skew; } }
+  }
+  throw lastErr || new Error('edge tts failed');
+}
+
+async function edgeSynthesizeWith({ text, voice = 'ko-KR-SunHiNeural', rate = '+0%', pitch = '+0Hz', volume = '+0%', timeoutMs = 20000, version }) {
   const clean = String(text || '').trim();
   if (!clean) throw new Error('text required');
   const sock = await openSocket(timeoutMs);
   const key = randomBytes(16).toString('base64');
   const connectionId = randomUUID().replace(/-/g, '');
-  const url = `${PATH}?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec()}&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}&ConnectionId=${connectionId}`;
-  sock.write([`GET ${url} HTTP/1.1`, `Host: ${HOST}`, 'Upgrade: websocket', 'Connection: Upgrade', `Sec-WebSocket-Key: ${key}`, 'Sec-WebSocket-Version: 13', 'Pragma: no-cache', 'Cache-Control: no-cache', 'Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold', 'Accept-Encoding: gzip, deflate, br', 'Accept-Language: en-US,en;q=0.9', `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_FULL_VERSION.split('.')[0]}.0.0.0 Safari/537.36 Edg/${CHROMIUM_FULL_VERSION}`, '', ''].join('\r\n'));
+  const major = version.split('.')[0];
+  const url = `${PATH}?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec()}&Sec-MS-GEC-Version=1-${version}&ConnectionId=${connectionId}`;
+  sock.write([`GET ${url} HTTP/1.1`, `Host: ${HOST}`, 'Upgrade: websocket', 'Connection: Upgrade', `Sec-WebSocket-Key: ${key}`, 'Sec-WebSocket-Version: 13', 'Pragma: no-cache', 'Cache-Control: no-cache', 'Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold', 'Accept-Encoding: gzip, deflate, br', 'Accept-Language: en-US,en;q=0.9', `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36 Edg/${major}.0.0.0`, '', ''].join('\r\n'));
   return new Promise((resolve, reject) => {
     let buf = Buffer.alloc(0); let upgraded = false; const audio = []; let done = false;
     const timer = setTimeout(() => finish(new Error('edge tts timeout')), timeoutMs);
@@ -90,7 +104,7 @@ export async function edgeSynthesize({ text, voice = 'ko-KR-SunHiNeural', rate =
       if (!upgraded) {
         const idx = buf.indexOf('\r\n\r\n'); if (idx < 0) return;
         const head = buf.subarray(0, idx).toString();
-        if (!/^HTTP\/1\.1 101/.test(head)) return finish(new Error(`edge tts handshake failed: ${head.split('\r\n')[0]}`));
+        if (!/^HTTP\/1\.1 101/.test(head)) { const e = new Error(`edge tts handshake failed: ${head.split('\r\n')[0]} (version ${version})`); e.forbidden = /\b403\b/.test(head.split('\r\n')[0]); e.serverDate = (head.match(/^date: (.*)$/mi) || [])[1] || null; return finish(e); }
         upgraded = true; buf = buf.subarray(idx + 4);
         const requestId = randomUUID().replace(/-/g, '');
         sock.write(wsFrame(Buffer.from(`X-Timestamp:${ts()}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n${JSON.stringify({ context: { synthesis: { audio: { metadataoptions: { sentenceBoundaryEnabled: 'false', wordBoundaryEnabled: 'false' }, outputFormat: OUTPUT_FORMAT } } } })}\r\n`), 1));

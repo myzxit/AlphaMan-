@@ -89,16 +89,19 @@ export class ThumbnailService {
     return set;
   }
 
-  // 브라우저에서 캡처한 프레임(JPEG/PNG raw body) 저장 → 후보에 추가
-  addUserFrame(userId, kind, refId, { buffer, at = null, mime = 'image/jpeg' }) {
+  // 브라우저에서 캡처한 프레임(JPEG/PNG raw body) 저장 → 후보에 추가. 서버리스에서는 원격 저장소(Blob)에도 올려 인스턴스가 바뀌어도 남는다
+  async addUserFrame(userId, kind, refId, { buffer, at = null, mime = 'image/jpeg' }) {
     const { col, rec } = this._ref(userId, kind, refId);
     if (!buffer || !buffer.length) throw new ApiError(400, '이미지 데이터가 없습니다.');
     if (buffer.length > 6 * 1024 * 1024) throw new ApiError(413, '이미지는 6MB 이하로 올려주세요.');
     const dir = path.join(this.outputDir, userId, 'thumbs'); fs.mkdirSync(dir, { recursive: true });
     const idx = (rec.thumbnailSet?.userFrames || []).length + 100;
-    const out = path.join(dir, `${refId}-${idx}.${mime.includes('png') ? 'png' : 'jpg'}`);
+    const ext = mime.includes('png') ? 'png' : 'jpg';
+    const out = path.join(dir, `${refId}-${idx}.${ext}`);
     fs.writeFileSync(out, buffer);
-    const frame = { id: `frame-${idx}`, label: at != null ? `캡처 ${fmt(at)}` : '캡처', url: `/api/thumbnail/${kind}/${refId}/frame/${idx}`, at, reason: '브라우저에서 캡처한 장면', score: 70 };
+    let remoteUrl = null;
+    if (this.store.remote?.putFile) { try { remoteUrl = await this.store.remote.putFile(`thumbs/${userId}/${refId}-${idx}.${ext}`, buffer, mime.includes('png') ? 'image/png' : 'image/jpeg'); } catch (err) { console.warn('[thumbnail] 프레임 원격 저장 실패:', err.message); } }
+    const frame = { id: `frame-${idx}`, label: at != null ? `캡처 ${fmt(at)}` : '캡처', url: `/api/thumbnail/${kind}/${refId}/frame/${idx}`, remoteUrl, at, reason: '브라우저에서 캡처한 장면', score: 70 };
     const set = { ...(rec.thumbnailSet || { candidates: [] }), userFrames: [...(rec.thumbnailSet?.userFrames || []), frame] };
     set.candidates = [...(set.candidates || []).filter((c) => c.id !== frame.id), frame];
     this.store.update(col, refId, { thumbnailSet: set });
@@ -109,7 +112,11 @@ export class ThumbnailService {
     const { rec } = this._ref(userId, kind, refId);
     const dir = path.join(this.outputDir, userId, 'thumbs');
     const f = ['jpg', 'png'].map((e) => path.join(dir, `${refId}-${idx}.${e}`)).find((p) => fs.existsSync(p));
-    if (!f) throw new ApiError(404, '프레임 파일이 없습니다.');
+    if (!f) {
+      const remote = (rec.thumbnailSet?.userFrames || []).find((u) => u.id === `frame-${idx}`)?.remoteUrl;
+      if (remote) return { redirect: remote, rec };
+      throw new ApiError(404, '프레임 파일이 없습니다.');
+    }
     return { path: f, mime: f.endsWith('.png') ? 'image/png' : 'image/jpeg', rec };
   }
 
@@ -118,7 +125,37 @@ export class ThumbnailService {
     if (!rec.thumbnailSet?.svg) throw new ApiError(404, '아직 썸네일이 없습니다. 자동 제작을 먼저 실행하세요.');
     return rec.thumbnailSet.svg;
   }
+
+  // <img src="...image.svg"> 로 쓰이는 SVG 는 외부 이미지를 불러올 수 없으므로(브라우저 보안 규칙) 배경 사진을 base64 로 안에 넣어 돌려준다.
+  // 결과는 (작업, 수정 시각) 기준으로 메모리에 캐시한다.
+  async svgInline(userId, kind, refId) {
+    const { rec } = this._ref(userId, kind, refId);
+    const set = rec.thumbnailSet;
+    if (!set?.svg) throw new ApiError(404, '아직 썸네일이 없습니다. 자동 제작을 먼저 실행하세요.');
+    const key = `${kind}:${refId}:${set.updatedAt}`;
+    const hit = svgCache.get(key); if (hit) return hit;
+    let image = set.imageUrl || null;
+    if (image && !image.startsWith('data:')) {
+      const data = await this._loadImage(userId, kind, refId, image).catch((err) => { console.warn('[thumbnail] 배경 이미지 로드 실패:', err.message); return null; });
+      image = data || null;
+    }
+    const svg = composeSvg({ width: set.width, height: set.height, image, headline: set.headline, subline: set.subline, style: set.style, palette: set.palette, badge: kind === 'shorts' ? 'SHORTS' : null });
+    if (svgCache.size > 200) svgCache.delete(svgCache.keys().next().value);
+    svgCache.set(key, svg);
+    return svg;
+  }
+  async _loadImage(userId, kind, refId, image) {
+    let buf = null; let mime = 'image/jpeg';
+    const m = image.match(/^\/api\/thumbnail\/proxy\?url=(.+)$/);
+    const frame = image.match(/^\/api\/thumbnail\/[^/]+\/[^/]+\/frame\/(\d+)$/);
+    if (m) { const url = decodeURIComponent(m[1]); if (!this.isAllowedProxy(url)) return null; const res = await fetch(url, { signal: AbortSignal.timeout(8000) }); if (!res.ok) { const fb = url.replace('maxresdefault', 'hqdefault'); const r2 = fb !== url ? await fetch(fb, { signal: AbortSignal.timeout(8000) }) : null; if (!r2 || !r2.ok) return null; mime = r2.headers.get('content-type') || mime; buf = Buffer.from(await r2.arrayBuffer()); } else { mime = res.headers.get('content-type') || mime; buf = Buffer.from(await res.arrayBuffer()); } }
+    else if (frame) { const f = this.frameFile(userId, kind, refId, frame[1]); if (f.redirect) { const res = await fetch(f.redirect, { signal: AbortSignal.timeout(8000) }); if (!res.ok) return null; mime = res.headers.get('content-type') || mime; buf = Buffer.from(await res.arrayBuffer()); } else { buf = fs.readFileSync(f.path); mime = f.mime; } }
+    else if (/^https?:\/\//.test(image) && this.isAllowedProxy(image)) { const res = await fetch(image, { signal: AbortSignal.timeout(8000) }); if (!res.ok) return null; mime = res.headers.get('content-type') || mime; buf = Buffer.from(await res.arrayBuffer()); }
+    if (!buf || !buf.length || buf.length > 8 * 1024 * 1024) return null;
+    return `data:${mime.split(';')[0]};base64,${buf.toString('base64')}`;
+  }
 }
+const svgCache = new Map();
 
 // 썸네일에 쓸 장면 시점: 후킹(시작) · 점수 높은/키워드 문장 · 중간 · 끝 직전
 function keyTimes(kind, rec, D) {
