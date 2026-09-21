@@ -4,6 +4,7 @@ import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtNum, fmtDate, 
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
 import { openPreview } from './player.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
+import { openRenderDialog, renderButton, bindRenderButtons } from './render-browser.js';
 import { listenFreeVoice, playProfileSample } from './tts.js';
 import { createAutosave } from './autosave.js';
 import { registerShortcuts } from './shortcuts.js';
@@ -107,6 +108,8 @@ export const studioJob = auth(async ({ view, params, state, navigate }) => {
   const { templates, ratios } = await get('/api/shorts/templates');
   let job = await get(`/api/shorts/jobs/${params.id}`);
   let timer = null;
+  bindRenderButtons(view, (k, id) => job.clips?.find((c) => c.id === id)?.title || job.source.title);
+  window.addEventListener('am:rendered', () => { get(`/api/shorts/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); }, { once: true });
   const draw = () => {
     const stepNames = { queued: '대기', downloading: '영상 가져오기', transcribing: '음성 인식', analyzing: 'AI 하이라이트 분석', editing: '자동 편집', rendering: '렌더링', done: '완료', failed: '실패' };
     view.innerHTML = html`<div class="row row-between"><div><a href="#/studio" class="small">← 스튜디오</a><h1>${job.source.title}</h1><div class="muted small">${job.source.type === 'youtube' ? raw(`<a href="${esc(job.source.url)}" target="_blank" rel="noopener">${esc(job.source.url)}</a>`) : '업로드 파일'} · ${fmtTime(job.source.durationSec)} · ${job.minutesCharged}분 차감 · 장르: ${job.genre || '-'} · 재생성 ${job.regenerations}회 ${raw(exactBadge(job.transcriptExact))}${job.transcriptEngine ? raw(` <span class="badge badge-soft">STT ${esc(job.transcriptEngine)}</span>`) : ''}</div></div>
@@ -122,7 +125,7 @@ export const studioJob = auth(async ({ view, params, state, navigate }) => {
     bindSeoButtons(view);
     on(view, 'click', '[data-export]', async (e, t) => {
       const fmt = t.dataset.format;
-      if (fmt === 'mp4') { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=mp4`), { headers: { Authorization: `Bearer ${getToken()}` } }); if ((r.headers.get('content-type') || '').includes('json')) { const j = await r.json(); modal(`<p>${esc(j.message || '')}</p><pre class="log">${esc(JSON.stringify(j.plan || j.clip?.render, null, 2))}</pre>`, { title: '렌더 계획' }); } else { const b = await r.blob(); saveBlob(b, `${t.dataset.export}.mp4`); } }
+      if (fmt === 'mp4') { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=mp4`), { headers: { Authorization: `Bearer ${getToken()}` } }); if ((r.headers.get('content-type') || '').includes('json')) { await r.json().catch(() => ({})); openRenderDialog({ kind: 'shorts', refId: t.dataset.export, title: job.clips?.find((c) => c.id === t.dataset.export)?.title || '' }); } else { const b = await r.blob(); saveBlob(b, `${t.dataset.export}.mp4`); } }
       else { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } }); saveBlob(await r.blob(), `${t.dataset.export}.${fmt}`); }
     });
   };
@@ -141,7 +144,7 @@ function clipCard(c, templates) {
     <div><b>${esc(c.seo?.bestTitle || c.title)}</b><div class="tiny muted">${fmtTime(c.start)} → ${fmtTime(c.end)} · ${c.durationSec}초${c.outro ? ` + 구독 카드 ${c.outro.durationSec}초` : ''} · ${c.ratio} · ${esc(t.name)} · 점수 ${c.score}</div></div>
     <div class="tiny muted">${esc(c.reason)}</div>
     <div class="chips">${c.cuts?.length ? `<span class="chip">무음 ${c.cuts.length}곳 제거</span>` : ''}${c.subtitles.length ? `<span class="chip">자막 ${c.subtitles.length}줄</span>` : ''}${c.audio?.voiceEnhance ? '<span class="chip">음성 향상</span>' : ''}${c.audio?.aiHookVoice ? `<span class="chip">AI 후킹 보이스${c.audio.aiHookVoice.voiceName ? ` · ${esc(c.audio.aiHookVoice.voiceName)}` : c.audio.aiHookVoice.voice === 'my-voice' ? ' · 내 목소리' : ''}</span>` : ''}${c.outro ? '<span class="chip">구독 CTA</span>' : ''}${c.seo ? `<span class="chip">태그 ${c.seo.tags.length}</span>` : ''}${Object.keys(c.translations || {}).map((l) => `<span class="chip">${esc(l.toUpperCase())} 번역</span>`).join('')}</div>
-    <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-preview="${c.id}">▶ 미리보기</button>${seoButtons('shorts', c.id)}<button class="btn btn-sm" data-edit="${c.id}">편집</button><button class="btn btn-sm" data-export="${c.id}" data-format="mp4">MP4</button><button class="btn btn-sm" data-export="${c.id}" data-format="srt">SRT</button><button class="btn btn-sm" data-publish="${c.id}">SNS 업로드</button></div></div>`;
+    <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-preview="${c.id}">▶ 미리보기</button>${c.render?.rendered ? `<button class="btn btn-sm" data-export="${c.id}" data-format="mp4">MP4</button>` : renderButton('shorts', c.id)}${seoButtons('shorts', c.id)}<button class="btn btn-sm" data-edit="${c.id}">편집</button><button class="btn btn-sm" data-export="${c.id}" data-format="srt">SRT</button><button class="btn btn-sm" data-publish="${c.id}">SNS 업로드</button></div></div>`;
 }
 
 function editClipModal(clip, templates, ratios, onSaved) {
@@ -177,7 +180,7 @@ export const longform = auth(async ({ view, params, state, navigate, query }) =>
   qs('#l-file').onchange = (e) => { const f = e.target.files[0]; if (f) { presetUpload = null; tc.fromFile(f); } };
   if (query.upload) { presetUpload = await prefillUpload(query.upload); if (presetUpload) { qs('#l-url').value = ''; qs('#l-url').placeholder = `파일 관리자에서 선택: ${presetUpload.name}`; toast(`"${presetUpload.name}" 파일이 선택되었습니다. 컷편집 시작을 누르세요.`); } }
   on(view, 'click', '[data-preview-longform]', (e, t) => openPreview({ kind: 'longform', refId: t.dataset.previewLongform }));
-  bindSeoButtons(view);
+  bindSeoButtons(view); bindRenderButtons(view, () => cur?.source?.title || '');
   on(view, 'click', '[data-del]', async (e, t) => { if (await confirmDialog('작업을 삭제할까요?')) { await del(`/api/longform/jobs/${t.dataset.del}`); navigate(`/longform?r=${Date.now()}`); } });
   qs('#l-go').onclick = async (e) => {
     if (tc.state.busy) return toast('원본 대본 추출이 끝날 때까지 잠시 기다려주세요.', 'info');
@@ -196,7 +199,7 @@ export const longform = auth(async ({ view, params, state, navigate, query }) =>
 function renderLongform(j) {
   if (j.status !== 'done') return `<div class="card" style="margin-top:16px"><b>${esc(j.source.title)}</b> ${statusBadge(j.status)} <div class="progress" style="margin-top:8px"><div style="width:${j.progress}%"></div></div><p class="tiny muted">잠시 후 새로고침됩니다.</p></div>`;
   const r = j.result; const D = r.originalDurationSec;
-  return `<div class="card" style="margin-top:16px"><div class="row row-between"><h3>${esc(j.source.title)}</h3><div class="row" style="flex-wrap:wrap"><button class="btn btn-primary btn-sm" data-preview-longform="${j.id}">▶ 미리보기</button>${seoButtons('longform', j.id)}<a class="btn btn-sm" href="#/library?kind=longform">📁 보관함</a></div></div>${r.seo ? `<div class="small" style="margin:6px 0"><b>🏆 추천 제목:</b> ${esc(r.seo.bestTitle)}</div>` : ''}<div class="chips"><span class="chip">원본 ${fmtTime(D)}</span><span class="chip">편집본 ${fmtTime(r.editedDurationSec)}</span><span class="chip">공백 제거 ${r.removedSec}초 (${r.cuts.length}곳)</span><span class="chip">자막 ${r.subtitles.length}줄</span><span class="chip">STT: ${esc(r.transcriptEngine)}</span>${exactBadge(r.transcriptExact)}</div>
+  return `<div class="card" style="margin-top:16px"><div class="row row-between"><h3>${esc(j.source.title)}</h3><div class="row" style="flex-wrap:wrap"><button class="btn btn-primary btn-sm" data-preview-longform="${j.id}">▶ 미리보기</button>${renderButton('longform', j.id)}${seoButtons('longform', j.id)}<a class="btn btn-sm" href="#/library?kind=longform">📁 보관함</a></div></div>${r.seo ? `<div class="small" style="margin:6px 0"><b>🏆 추천 제목:</b> ${esc(r.seo.bestTitle)}</div>` : ''}<div class="chips"><span class="chip">원본 ${fmtTime(D)}</span><span class="chip">편집본 ${fmtTime(r.editedDurationSec)}</span><span class="chip">공백 제거 ${r.removedSec}초 (${r.cuts.length}곳)</span><span class="chip">자막 ${r.subtitles.length}줄</span><span class="chip">STT: ${esc(r.transcriptEngine)}</span>${exactBadge(r.transcriptExact)}</div>
     <div class="timeline" style="margin:12px 0">${r.timeline.map((k) => `<div class="seg" style="left:${(k.start / D) * 100}%;width:${((k.end - k.start) / D) * 100}%"></div>`).join('')}${r.cuts.map((c) => `<div class="cut" style="left:${(c.start / D) * 100}%;width:${Math.max(0.3, ((c.end - c.start) / D) * 100)}%"></div>`).join('')}</div>
     <h4>챕터</h4>${r.chapters.map((c) => `<div class="row"><span class="kbd">${fmtTime(c.at)}</span> ${esc(c.title)}</div>`).join('')}
     <details style="margin-top:10px"><summary>자막 미리보기</summary><div class="log">${r.subtitles.slice(0, 40).map((s) => `${fmtTime(s.start)} ${esc(s.text)}`).join('\n')}</div></details></div>`;

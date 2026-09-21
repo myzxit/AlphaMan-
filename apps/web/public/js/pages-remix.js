@@ -4,6 +4,7 @@ import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtDate, creditsL
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
 import { mountPlayer, getWithRetry } from './player.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
+import { openRenderDialog, renderButton, bindRenderButtons } from './render-browser.js';
 import { listenFreeVoice, playProfileSample, playRender, stopAll } from './tts.js';
 
 const auth = (fn) => Object.assign(fn, { requiresAuth: true });
@@ -91,6 +92,8 @@ export const remix = auth(async ({ view, state, navigate, query }) => {
 export const remixJob = auth(async ({ view, params, navigate }) => {
   let job = await get(`/api/remix/jobs/${params.id}`);
   let timer = null;
+  bindRenderButtons(view, () => job.result?.plan?.title || job.source.title);
+  window.addEventListener('am:rendered', () => { get(`/api/remix/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); }, { once: true });
   const stepNames = { queued: '대기', ingest: '원본 가져오기', reference: '참고 영상 분석', transcribing: '음성 인식', cleaning: '원본 정리 (자막·효과음·배경음 제거)', planning: 'AI 구성 계획', rebuilding: '새 자막·효과음·내레이션', rendering: '렌더링', done: '완료', failed: '실패' };
   const draw = () => {
     const r = job.result;
@@ -104,7 +107,7 @@ export const remixJob = auth(async ({ view, params, navigate }) => {
     on(view, 'click', '[data-export]', async (e, t) => {
       const fmt = t.dataset.export;
       const res = await fetch(downloadUrl(`/api/remix/jobs/${job.id}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } });
-      if ((res.headers.get('content-type') || '').includes('json') && fmt === 'mp4') { const j = await res.json(); modal(`<p>${esc(j.message || '')}</p><pre class="log">${esc(JSON.stringify(j.plan, null, 2))}</pre>`, { title: '렌더 계획', wide: true }); return; }
+      if ((res.headers.get('content-type') || '').includes('json') && fmt === 'mp4') { await res.json().catch(() => ({})); openRenderDialog({ kind: 'remix', refId: job.id, title: job.result?.plan?.title || job.source.title }); return; }
       saveBlob(await res.blob(), `${job.id}.${fmt}`);
     });
     const save = qs('#rj-save'); if (save) save.onclick = async () => {
@@ -121,9 +124,9 @@ export const remixJob = auth(async ({ view, params, navigate }) => {
 function renderResult(job) {
   const r = job.result; const D = job.source.durationSec; const F = r.finalDurationSec || 1;
   const sp = r.styleProfile;
-  return `<div class="card"><h3>▶ 완성본 미리보기</h3><div class="tiny muted">${r.render?.rendered ? '렌더된 MP4 를 재생합니다.' : '원본을 새 타임라인(원본 구간 · 리플레이 · 슬로모션 · 카드)대로 이어 재생하며 자막·후킹을 겹쳐 보여줍니다. ffmpeg 이 있는 프로그램 버전에서는 실제 MP4 가 렌더링됩니다.'}</div><div id="rj-player" class="preview-inline"><div class="muted">플레이어 준비 중...</div></div>
+  return `<div class="card"><h3>▶ 완성본 미리보기</h3><div class="tiny muted">${r.render?.rendered ? '렌더된 MP4 를 재생합니다.' : `원본을 새 타임라인(원본 구간 · 리플레이 · 슬로모션 · 카드)대로 이어 재생하며 새 자막·후킹·구독 카드를 겹쳐 보여줍니다${(r.cleaning?.steps || []).some((s) => s.id === 'burned-subtitles') ? ' (원본에 박힌 자막은 하단을 잘라 가립니다)' : ''}. 실제 영상 파일은 <b>🎬 영상 파일 만들기</b>(업로드/PC 파일 원본은 브라우저에서 바로, 유튜브 링크 원본은 PC 프로그램에서 ffmpeg 로)로 만듭니다.`}</div><div id="rj-player" class="preview-inline"><div class="muted">플레이어 준비 중...</div></div>
     <div class="chips"><span class="chip">${esc(r.summary)}</span><span class="chip">장르 ${esc(r.genre)}</span><span class="chip">호흡 ${esc(r.plan.pacing)}</span><span class="chip">템플릿 ${esc(r.template.name)}</span><span class="chip">STT ${esc(r.transcriptEngine)}</span>${exactBadge(r.transcriptExact)}<span class="chip">계획 ${esc(r.plan.engine)}</span></div>
-    <div class="row" style="margin-top:10px;flex-wrap:wrap"><button class="btn btn-primary" data-export="mp4">MP4 내보내기</button><button class="btn" data-export="ass">자막(ASS)</button><button class="btn" data-export="json">편집 데이터(JSON)</button>${seoButtons('remix', job.id)}<a class="btn" href="#/library?kind=remix">📁 보관함</a></div>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">${r.render?.rendered ? '<button class="btn btn-primary" data-export="mp4">MP4 내보내기</button>' : renderButton('remix', job.id).replace('class="btn btn-sm"', 'class="btn btn-primary"')}<button class="btn" data-export="ass">자막(ASS)</button><button class="btn" data-export="json">편집 데이터(JSON)</button>${seoButtons('remix', job.id)}<a class="btn" href="#/library?kind=remix">📁 보관함</a></div>
     ${r.seo ? `<div class="grid grid-2" style="margin-top:12px"><div><div class="tiny muted">🏆 유튜브 최고 추천 제목</div><div style="font-weight:900">${esc(r.seo.bestTitle)}</div><div class="tiny muted" style="margin-top:4px">원본과 비슷한 제목: ${esc(r.seo.similarTitle)}</div><div class="chips" style="margin-top:6px">${r.seo.hashtags.map((h) => `<span class="chip">${esc(h)}</span>`).join('')}</div></div>${job.thumbnailSet ? `<div><div class="tiny muted">🖼️ 자동 제작 썸네일 (${esc(job.thumbnailSet.style)})</div><img src="${esc(downloadUrl(`/api/thumbnail/remix/${job.id}/image.svg?v=${encodeURIComponent(job.thumbnailSet.updatedAt)}`))}" alt="썸네일" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;cursor:pointer" data-thumb="remix:${job.id}" /></div>` : ''}</div>` : ''}</div>
   <div class="split" style="margin-top:16px"><div class="col">
     <div class="card"><h3>구성</h3><div class="small"><b>후킹:</b> ${esc(r.plan.hook)}</div><div class="small muted">${esc(r.plan.description)}</div><ol class="small">${r.plan.outline.map((o) => `<li>${esc(o)}</li>`).join('')}</ol>

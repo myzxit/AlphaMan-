@@ -74,12 +74,21 @@ export class VoiceService {
   _freeEngine() { return which('edge-tts') ? 'edge-tts' : this._edgeNode ? 'edge' : this._google ? 'google' : 'browser'; }
   freeVoices() { return FREE_VOICES.map((v) => ({ ...v, engine: this._freeEngine() })); }
   // 실제 음성 파일을 만들 수 있는 무료 엔진을 한 번 탐색해 둔다 (서버 시작 시 백그라운드)
+  // 둘 다 실패한 결과는 잠시만 유지한다: 서버리스(Vercel)는 응답 후 함수를 동결하므로 백그라운드 탐색이 타임아웃으로 끝날 수 있고,
+  // 그 실패를 영구 캐시하면 실제로는 되는 Edge TTS 가 계속 "브라우저 음성" 으로 표시된다.
   detectFreeEngines() {
+    if (this._detected && !this._edgeNode && !this._google && Date.now() - (this._detectedAt || 0) > 60_000) { this._detecting = null; this._detected = false; }
     if (!this._detecting) {
       this._detecting = Promise.all([edgeTtsAvailable().catch(() => false), googleTtsAvailable().catch(() => false)])
-        .then(([e, g]) => { this._edgeNode = e; this._google = g; this._detected = true; return { edgeNode: e, google: g }; });
+        .then(([e, g]) => { this._edgeNode = e; this._google = g; this._detected = true; this._detectedAt = Date.now(); return { edgeNode: e, google: g }; });
     }
     return this._detecting;
+  }
+  // 요청 안에서 탐색을 기다린다 (최대 waitMs). 서버리스에서는 요청 중에만 네트워크가 살아 있으므로 여기서 실제 확인이 이뤄진다.
+  async ensureDetected(waitMs = 6000) {
+    if (process.env.ALPHAMAN_TTS_DETECT === 'off') return;
+    if (this._detected && (this._edgeNode || this._google)) return;
+    await Promise.race([this.detectFreeEngines().catch(() => {}), new Promise((r) => setTimeout(r, waitMs))]);
   }
   freeVoice(id) { return FREE_VOICES.find((v) => v.id === id) || null; }
 
@@ -180,10 +189,10 @@ export class VoiceService {
         try { fs.mkdirSync(dir, { recursive: true }); await run('edge-tts', ['--voice', fv.edge, '--rate', rate, '--pitch', pitch, '--text', clean, '--write-media', out]); return this._record(userId, { ...base, engine: 'edge-tts', audioPath: out, durationSec: estimatedSec, browser }); }
         catch (err) { console.warn('[voice] edge-tts CLI 실패:', err.message); }
       }
-      if (!this._detected && process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.detectFreeEngines().catch(() => {}); // 탐색이 진행 중이면 끝날 때까지 기다린다
+      if (process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.ensureDetected(10000); // 탐색이 진행 중이거나 이전에 실패했으면 요청 안에서 다시 확인한다
       if (this._edgeNode) {
-        try { const mp3 = await edgeSynthesize({ text: clean, voice: fv.edge, rate, pitch }); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(out, mp3); return this._record(userId, { ...base, engine: 'edge', audioPath: out, durationSec: estimatedSec, browser }); }
-        catch (err) { console.warn('[voice] Edge TTS 실패:', err.message); this._edgeNode = false; }
+        try { const mp3 = await edgeSynthesize({ text: clean, voice: fv.edge, rate, pitch }); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(out, mp3); this._edgeNode = true; return this._record(userId, { ...base, engine: 'edge', audioPath: out, durationSec: estimatedSec, browser }); }
+        catch (err) { console.warn('[voice] Edge TTS 실패:', err.message); this._edgeNode = false; this._detectedAt = Date.now(); }
       }
       if (this._google) {
         try {
@@ -193,7 +202,7 @@ export class VoiceService {
           // 속도/높낮이 프리셋은 ffmpeg 이 있으면 적용
           if (which('ffmpeg') && (Math.abs(speed - 1) > 0.02 || pitchN !== 0)) { try { await run('ffmpeg', ['-y', '-i', finalPath, '-filter:a', `atempo=${Math.min(2, Math.max(0.5, speed))}${pitchN ? `,asetrate=24000*${(1 + pitchN * 0.03).toFixed(3)},aresample=24000` : ''}`, out]); finalPath = out; } catch { /* 원본 유지 */ } }
           return this._record(userId, { ...base, engine: 'google', audioPath: finalPath, durationSec: estimatedSec, browser, plan: { note: `Google 읽어주기 음성(${fv.lang || 'ko-KR'})으로 만든 MP3 입니다. 목소리 성격(${fv.name})은 브라우저 재생/edge-tts 에서 더 정확히 반영됩니다.` } });
-        } catch (err) { console.warn('[voice] Google TTS 실패:', err.message); this._google = false; }
+        } catch (err) { console.warn('[voice] Google TTS 실패:', err.message); this._google = false; this._detectedAt = Date.now(); }
       }
       return this._record(userId, { ...base, engine: 'browser', audioPath: null, durationSec: estimatedSec, browser, plan: { note: '브라우저 내장 음성으로 재생됩니다. 서버가 인터넷에 연결되어 있거나 edge-tts 를 설치하면 MP3 파일도 생성됩니다.' } });
     }

@@ -265,6 +265,21 @@ async function boot() {
   if (sp.get('pay')) { const pay = sp.get('pay'); sp.delete('pay'); history.replaceState(null, '', `${location.pathname}#/pay/${pay === 'success' ? 'success' : 'fail'}?${sp.toString()}`); }
   if (state.desktop) document.body.classList.add('is-desktop');
   qs('#platform-badge').textContent = state.desktop ? '프로그램 버전' : '웹사이트 버전';
+  // 프로그램 버전: ffmpeg/yt-dlp 자동 설치 상태를 배지에 표시하고 준비되면 알린다 (실제 MP4 렌더링 가능)
+  if (state.desktop && window.alphaman?.toolsState) {
+    let announced = false;
+    const poll = async () => {
+      try {
+        const t = await window.alphaman.toolsState();
+        const busy = ['ffmpeg', 'ffprobe', 'ytdlp'].filter((k) => t[k] === 'downloading' || t[k] === 'checking');
+        const badge = qs('#platform-badge');
+        if (busy.length) { const pct = Math.min(...busy.map((k) => t.progress?.[k] ?? 0)); badge.textContent = `프로그램 버전 · 렌더 도구 설치 중 ${pct ? `${pct}%` : ''}`; badge.title = `설치 중: ${busy.join(', ')} (완료되면 실제 MP4 렌더링이 됩니다)`; setTimeout(poll, 3000); return; }
+        badge.textContent = t.ffmpeg === 'ready' ? '프로그램 버전 · 렌더 준비됨' : '프로그램 버전'; badge.title = t.ffmpeg === 'ready' ? 'ffmpeg 준비됨: 실제 MP4 렌더링 가능' : `ffmpeg 없음: ${t.error || '렌더 계획만 생성'}`;
+        if (t.ffmpeg === 'ready' && !announced && sessionStorage.getItem('am_tools_announced') !== '1') { announced = true; try { sessionStorage.setItem('am_tools_announced', '1'); } catch { /* ignore */ } }
+      } catch { /* ignore */ }
+    };
+    poll();
+  }
   initOfflineBanner(); initPwa();
   try { [state.info, state.notices] = await Promise.all([get('/api/info'), get('/api/notices')]); } catch (err) { qs('#view').innerHTML = errorScreen(err, { title: '서버에 연결할 수 없습니다', retry: () => location.reload() }); return; }
   renderFooter(); renderNoticeBar();

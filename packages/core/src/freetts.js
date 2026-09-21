@@ -34,10 +34,14 @@ export async function googleSynthesize({ text, lang = 'ko', timeoutMs = 15000 })
   return Buffer.concat(buffers);
 }
 
-let available = null; export let googleLastError = null;
+// 성공은 영구 캐시, 실패는 잠시만 캐시했다가 다시 확인한다 (서버리스 동결·일시적 네트워크 오류 대응)
+let available = null; let failedAt = 0; export let googleLastError = null;
+const RETRY_MS = 60_000;
 export async function googleTtsAvailable() {
   if (isGoogleTtsDisabled()) return false;
-  if (available !== null) return available;
-  try { const b = await googleSynthesize({ text: 'hello there', lang: 'en', timeoutMs: 8000 }); available = b.length > 300; if (!available) googleLastError = `too small (${b.length}B)`; } catch (err) { available = false; googleLastError = err.message; }
+  if (available === true) return true;
+  if (available === false && Date.now() - failedAt < RETRY_MS) return false;
+  try { const b = await googleSynthesize({ text: 'hello there', lang: 'en', timeoutMs: 8000 }); available = b.length > 300; if (!available) googleLastError = `too small (${b.length}B)`; else googleLastError = null; } catch (err) { available = false; googleLastError = err.message; }
+  if (available === false) failedAt = Date.now();
   return available;
 }

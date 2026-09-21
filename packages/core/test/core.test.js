@@ -468,7 +468,7 @@ test('영상 마무리 구독 CTA · 유튜브 최적화(원본 비슷한 제목
   assert.equal(edited.selectedId, 'yt-2'); assert.ok(edited.svg.includes('hq2.jpg') && edited.svg.includes('비밀') && edited.svg.includes('#ff3b3b'));
   const item = a.library.list(user.id).items.find((i) => i.refId === clip.id);
   assert.match(item.thumbnail, /\/api\/thumbnail\/shorts\//);
-  const frame = a.thumbnail.addUserFrame(user.id, 'shorts', clip.id, { buffer: Buffer.from('jpegdata'), at: 3.5 });
+  const frame = await a.thumbnail.addUserFrame(user.id, 'shorts', clip.id, { buffer: Buffer.from('jpegdata'), at: 3.5 });
   assert.ok(a.thumbnail.frameFile(user.id, 'shorts', clip.id, 100).path.endsWith('.jpg') && frame.at === 3.5);
   assert.ok(!a.thumbnail.isAllowedProxy('https://evil.example.com/a.jpg') && a.thumbnail.isAllowedProxy('https://i.ytimg.com/vi/x/hq1.jpg'));
   const svg = composeSvg({ width: 1280, height: 720, image: null, headline: '텍스트 없는 배경', subline: '', style: 'split', palette: 'mint', badge: null });

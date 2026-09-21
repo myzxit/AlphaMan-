@@ -10,24 +10,46 @@ let server = null; let win = null; let tray = null;
 const isPackaged = app.isPackaged;
 const appRoot = isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '../..');
 
-// 프로그램 버전은 유튜브 링크의 원본 자막(대본)을 자동으로 가져오기 위해 yt-dlp 를 사용자 데이터 폴더에 자동 설치한다 (없을 때만).
-const toolsState = { ytdlp: 'checking', ytdlpPath: null, error: null };
+// 프로그램 버전은 실제 렌더링(ffmpeg/ffprobe)과 유튜브 원본 내려받기·자막 수집(yt-dlp)에 필요한 도구를 사용자 데이터 폴더에 자동 설치한다 (없을 때만).
+// 다운로드 중에도 앱은 정상 동작하며, 도구가 준비되면 이후 작업부터 실제 MP4 렌더링이 된다.
+const toolsState = { ytdlp: 'checking', ytdlpPath: null, ffmpeg: 'checking', ffprobe: 'checking', progress: {}, error: null };
 function hasOnPath(bin) { try { execSync(`${process.platform === 'win32' ? 'where' : 'which'} ${bin}`, { stdio: 'ignore', timeout: 5000 }); return true; } catch { return false; } }
+function binDirPath() { const binDir = path.join(app.getPath('userData'), 'bin'); if (!process.env.PATH.split(path.delimiter).includes(binDir)) process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`; fs.mkdirSync(binDir, { recursive: true }); return binDir; }
+async function downloadTo(url, file, key) {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const total = Number(res.headers.get('content-length')) || 0; let got = 0; const chunks = [];
+  const reader = res.body.getReader();
+  for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(Buffer.from(value)); got += value.length; if (total) toolsState.progress[key] = Math.round((got / total) * 100); }
+  const tmp = `${file}.part`; fs.writeFileSync(tmp, Buffer.concat(chunks)); fs.renameSync(tmp, file);
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
+}
 async function ensureYtDlp() {
-  const binDir = path.join(app.getPath('userData'), 'bin');
+  const binDir = binDirPath();
   const file = path.join(binDir, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
-  if (!process.env.PATH.split(path.delimiter).includes(binDir)) process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
   if (hasOnPath('yt-dlp')) { toolsState.ytdlp = 'ready'; toolsState.ytdlpPath = fs.existsSync(file) ? file : 'PATH'; return; }
   try {
-    fs.mkdirSync(binDir, { recursive: true });
     const asset = process.platform === 'win32' ? 'yt-dlp.exe' : process.platform === 'darwin' ? 'yt-dlp_macos' : 'yt-dlp';
     toolsState.ytdlp = 'downloading';
-    const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-    if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
+    await downloadTo(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`, file, 'ytdlp');
     toolsState.ytdlp = 'ready'; toolsState.ytdlpPath = file;
   } catch (err) { toolsState.ytdlp = 'missing'; toolsState.error = err.message; console.warn('yt-dlp 자동 설치 실패 (링크 대본은 붙여넣기로 대체):', err.message); }
+}
+// ffmpeg/ffprobe 정적 빌드 (ffmpeg-static · ffprobe-static 배포본): Windows x64 · macOS(arm64/x64) · Linux x64
+async function ensureFfmpeg() {
+  const binDir = binDirPath();
+  const plat = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const exe = process.platform === 'win32' ? '.exe' : '';
+  const jobs = [
+    ['ffmpeg', path.join(binDir, `ffmpeg${exe}`), `https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-${plat}-${arch}`],
+    ['ffprobe', path.join(binDir, `ffprobe${exe}`), `https://raw.githubusercontent.com/joshwnj/ffprobe-static/master/bin/${plat}/${arch}/ffprobe${exe}`],
+  ];
+  for (const [name, file, url] of jobs) {
+    if (hasOnPath(name)) { toolsState[name] = 'ready'; continue; }
+    try { toolsState[name] = 'downloading'; await downloadTo(url, file, name); toolsState[name] = 'ready'; }
+    catch (err) { toolsState[name] = 'missing'; toolsState.error = err.message; console.warn(`${name} 자동 설치 실패 (렌더링은 계획만 생성):`, err.message); }
+  }
 }
 
 async function startEmbeddedServer() {
@@ -136,7 +158,7 @@ function listRemovableDrives() {
 app.whenReady().then(async () => {
   try { await startEmbeddedServer(); } catch (err) { dialog.showErrorBox('AlphaMan 시작 실패', String(err.stack || err)); app.quit(); return; }
   createWindow(); createTray();
-  if (!process.env.ALPHAMAN_SCREENSHOT) ensureYtDlp().catch(() => {}); // 백그라운드 설치 (시작을 막지 않음)
+  if (!process.env.ALPHAMAN_SCREENSHOT) { binDirPath(); ensureYtDlp().catch(() => {}); ensureFfmpeg().catch(() => {}); } // 백그라운드 설치 (시작을 막지 않음)
   // 알림 브리지: 새 알림이 오면 OS 알림으로 표시
   setInterval(async () => {
     try {

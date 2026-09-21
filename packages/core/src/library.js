@@ -1,12 +1,22 @@
 // 보관함: 내가 만든 영상(쇼츠 클립 · AI 재구성 · 롱폼 컷편집)을 한곳에 모아 미리보기 · 다운로드 · 즐겨찾기 · 삭제
 // 작업이 완료되면 자동으로 저장되고, 미리보기 스펙(previewSpec)은 웹사이트/프로그램 공용 플레이어가 그대로 재생한다.
 import fs from 'node:fs';
+import path from 'node:path';
 import { ApiError } from './errors.js';
 
 export const LIBRARY_KINDS = { shorts: '쇼츠', remix: 'AI 재구성', longform: '롱폼 컷편집' };
 
 export class LibraryService {
-  constructor({ store, notifications = null }) { this.store = store; this.notifications = notifications; }
+  constructor({ store, notifications = null, outputDir = null }) { this.store = store; this.notifications = notifications; this.outputDir = outputDir; }
+
+  // 렌더된 파일이 있는가: 서버(ffmpeg) 렌더 파일 또는 브라우저에서 렌더링해 올린 파일
+  _isRendered(r) { return Boolean(r.browserRender?.url || (r.renderPath && fs.existsSync(r.renderPath))); }
+  // 브라우저 렌더 결과가 있으면 미리보기/다운로드가 그 파일을 쓴다
+  _libRender(userId, kind, refId) {
+    const item = this.store.find('library', (r) => r.userId === userId && r.kind === kind && r.refId === refId)[0];
+    if (!item || !item.browserRender?.url) return null;
+    return { libraryId: item.id, url: `/api/library/${item.id}/video`, mime: item.browserRender.mime || 'video/webm', at: item.browserRender.at };
+  }
 
   // 같은 원본(kind + refId)이 이미 있으면 갱신해 중복을 막는다 (재생성 · 재렌더 · 편집 저장 시)
   add(userId, { kind, refId, jobId = null, title, thumbnail = null, durationSec = 0, ratio = '16:9', renderPath = null, subtitleCount = 0, transcriptExact = null, sourceTitle = '', sourceType = '', extra = {} }) {
@@ -66,14 +76,14 @@ export class LibraryService {
     if (kind && LIBRARY_KINDS[kind]) items = items.filter((r) => r.kind === kind);
     if (favorite === '1' || favorite === true) items = items.filter((r) => r.favorite);
     if (q) { const needle = String(q).toLowerCase(); items = items.filter((r) => `${r.title} ${r.sourceTitle} ${(r.tags || []).join(' ')} ${r.note || ''}`.toLowerCase().includes(needle)); }
-    items = items.map((r) => ({ ...r, rendered: Boolean(r.renderPath && fs.existsSync(r.renderPath)), renderPath: undefined })).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+    items = items.map((r) => ({ ...r, rendered: this._isRendered(r), renderMime: r.browserRender?.mime || (r.renderPath ? 'video/mp4' : null), renderPath: undefined })).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
     return { items, stats: this.stats(userId) };
   }
 
   stats(userId) {
     const all = this.store.find('library', (r) => r.userId === userId);
     const byKind = Object.fromEntries(Object.keys(LIBRARY_KINDS).map((k) => [k, all.filter((r) => r.kind === k).length]));
-    return { total: all.length, byKind, favorites: all.filter((r) => r.favorite).length, totalDurationSec: round(all.reduce((s, r) => s + (r.durationSec || 0), 0)), rendered: all.filter((r) => r.renderPath && fs.existsSync(r.renderPath)).length };
+    return { total: all.length, byKind, favorites: all.filter((r) => r.favorite).length, totalDurationSec: round(all.reduce((s, r) => s + (r.durationSec || 0), 0)), rendered: all.filter((r) => this._isRendered(r)).length };
   }
 
   get(userId, id) {
@@ -86,7 +96,7 @@ export class LibraryService {
   detail(userId, id) {
     const item = this.get(userId, id);
     const preview = this.previewSpec(userId, item.kind, item.refId);
-    return { ...item, renderPath: undefined, rendered: Boolean(item.renderPath && fs.existsSync(item.renderPath)), preview, link: item.kind === 'shorts' ? `#/studio/${item.jobId}` : item.kind === 'remix' ? `#/remix/${item.refId}` : `#/longform/${item.refId}` };
+    return { ...item, renderPath: undefined, rendered: this._isRendered(item), renderMime: item.browserRender?.mime || (item.renderPath ? 'video/mp4' : null), preview, link: item.kind === 'shorts' ? `#/studio/${item.jobId}` : item.kind === 'remix' ? `#/remix/${item.refId}` : `#/longform/${item.refId}` };
   }
 
   update(userId, id, patch = {}) {
@@ -107,12 +117,59 @@ export class LibraryService {
 
   removeByRef(kind, refId) { for (const r of this.store.find('library', (x) => x.kind === kind && x.refId === refId)) this.store.remove('library', r.id); return true; }
 
-  // 렌더된 MP4 경로 (미리보기 스트리밍/다운로드용)
+  // 렌더된 파일 (미리보기 스트리밍/다운로드용): 로컬 파일 경로 또는 원격(Blob) URL 리다이렉트
   videoFile(userId, id) {
     const r = this.get(userId, id);
+    if (r.browserRender?.url) {
+      if (r.browserRender.path && fs.existsSync(r.browserRender.path)) return { path: r.browserRender.path, mime: r.browserRender.mime || 'video/webm', ext: r.browserRender.ext || 'webm' };
+      if (/^https?:\/\//.test(r.browserRender.url)) return { redirect: r.browserRender.url, mime: r.browserRender.mime || 'video/webm', ext: r.browserRender.ext || 'webm' };
+    }
     if (!r.renderPath || !fs.existsSync(r.renderPath)) return null;
-    return r.renderPath;
+    return { path: r.renderPath, mime: 'video/mp4', ext: 'mp4' };
   }
+
+  // 브라우저에서 렌더링한 결과(WebM/MP4)를 조각으로 받아 저장한다. 서버리스는 요청 본문 4.5MB 제한이 있어 조각 업로드 → 마지막 조각에서 합친다.
+  // 원격 저장소(Blob)가 있으면 조각과 최종 파일을 그곳에 두어 인스턴스가 바뀌어도 남는다.
+  async saveBrowserRender(userId, id, { uploadId, part = 0, parts = 1, mime = 'video/webm', buffer }) {
+    const item = this.get(userId, id);
+    if (!buffer || !buffer.length) throw new ApiError(400, '영상 데이터가 없습니다.');
+    if (buffer.length > 4.6 * 1024 * 1024) throw new ApiError(413, '조각은 4.5MB 이하여야 합니다.');
+    const uid = String(uploadId || 'u').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'u';
+    const n = Math.max(1, Math.min(2000, Number(parts) || 1)); const i = Math.max(0, Math.min(n - 1, Number(part) || 0));
+    const ext = /mp4/.test(mime) ? 'mp4' : 'webm';
+    const remote = this.store.remote?.putFile ? this.store.remote : null;
+    const dir = path.join(this.outputDir || '.', userId, 'browser'); fs.mkdirSync(dir, { recursive: true });
+    if (remote) {
+      const partUrl = await remote.putFile(`renders/${userId}/${uid}/part-${String(i).padStart(4, '0')}`, buffer, 'application/octet-stream');
+      const state = this.store.findOne('renderUploads', (u) => u.uploadId === uid && u.userId === userId) || this.store.insert('renderUploads', { uploadId: uid, userId, libraryId: id, parts: n, urls: {} });
+      const urls = { ...state.urls, [i]: partUrl };
+      this.store.update('renderUploads', state.id, { urls });
+      if (Object.keys(urls).length < n) return { received: Object.keys(urls).length, parts: n, done: false };
+      const chunks = [];
+      for (let k = 0; k < n; k++) { const res = await fetch(urls[k]); if (!res.ok) throw new ApiError(502, `조각 ${k} 을 다시 읽지 못했습니다.`); chunks.push(Buffer.from(await res.arrayBuffer())); }
+      const all = Buffer.concat(chunks);
+      const url = await remote.putFile(`renders/${userId}/${id}.${ext}`, all, mime);
+      this.store.remove('renderUploads', state.id);
+      const local = path.join(dir, `${id}.${ext}`); try { fs.writeFileSync(local, all); } catch { /* 서버리스 임시 디스크 */ }
+      const browserRender = { url, path: local, mime, ext, size: all.length, at: new Date().toISOString() };
+      this.store.update('library', id, { browserRender });
+      this._notifyRendered(item, browserRender);
+      return { received: n, parts: n, done: true, url: `/api/library/${id}/video`, size: all.length };
+    }
+    const partPath = path.join(dir, `${uid}.part-${String(i).padStart(4, '0')}`);
+    fs.writeFileSync(partPath, buffer);
+    const have = fs.readdirSync(dir).filter((f) => f.startsWith(`${uid}.part-`)).length;
+    if (have < n) return { received: have, parts: n, done: false };
+    const final = path.join(dir, `${id}.${ext}`);
+    const out = fs.createWriteStream(final);
+    for (let k = 0; k < n; k++) { const pp = path.join(dir, `${uid}.part-${String(k).padStart(4, '0')}`); out.write(fs.readFileSync(pp)); fs.unlinkSync(pp); }
+    await new Promise((res, rej) => { out.on('finish', res); out.on('error', rej); out.end(); });
+    const browserRender = { url: `/api/library/${id}/video`, path: final, mime, ext, size: fs.statSync(final).size, at: new Date().toISOString() };
+    this.store.update('library', id, { browserRender });
+    this._notifyRendered(item, browserRender);
+    return { received: n, parts: n, done: true, url: browserRender.url, size: browserRender.size };
+  }
+  _notifyRendered(item, br) { this.notifications?.push(item.userId, { type: 'render.done', title: '렌더링 완료', body: `"${item.title}" 영상 파일(${br.ext.toUpperCase()}, ${Math.round(br.size / 1024 / 1024 * 10) / 10}MB)이 보관함에 저장되었습니다.`, link: '#/library' }); }
 
   _ref(item) {
     if (item.kind === 'shorts') return this.store.get('clips', item.refId);
@@ -136,9 +193,10 @@ export class LibraryService {
       if (clip.end > pos) { items.push({ kind: 'source', start: pos, end: clip.end, speed: 1, newStart: round(cursor), newEnd: round(cursor + clip.end - pos) }); cursor += clip.end - pos; }
       if (clip.outro) { items.push({ kind: 'card', title: clip.outro.text, cta: true, channel: clip.outro.channel || null, start: 0, end: 0, speed: 1, newStart: round(cursor), newEnd: round(cursor + clip.outro.durationSec) }); cursor += clip.outro.durationSec; }
       const rendered = Boolean(clip.render?.rendered && clip.render.output && fs.existsSync(clip.render.output));
+      const lib = rendered ? null : this._libRender(userId, 'shorts', clip.id);
       return {
-        kind: 'shorts', refId: clip.id, title: clip.title, ratio: clip.ratio, durationSec: round(cursor), rendered, burnedSubtitles: false,
-        renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : null,
+        kind: 'shorts', refId: clip.id, title: clip.title, ratio: clip.ratio, durationSec: round(cursor), rendered: rendered || Boolean(lib), burnedSubtitles: Boolean(lib), renderedBy: rendered ? 'ffmpeg' : lib ? 'browser' : null,
+        renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : lib ? lib.url : null,
         source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map(sub), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
         zoomKeyframes: clip.zoomKeyframes || [], templateId: clip.templateId, transcriptExact: job.transcriptExact ?? null, thumbnail: clip.thumbnail || job.source.thumbnail || null,
         outro: clip.outro || null, seo: clip.seo || null, cropBottom: clip.cropBottom || 0,
@@ -151,9 +209,10 @@ export class LibraryService {
       if (!job || job.userId !== userId) throw new ApiError(404, '재구성 작업을 찾을 수 없습니다.');
       const r = job.result || {};
       const rendered = Boolean(r.render?.rendered && r.render.output && fs.existsSync(r.render.output));
+      const lib = rendered ? null : this._libRender(userId, 'remix', job.id);
       return {
-        kind: 'remix', refId: job.id, title: r.plan?.title || job.source.title, ratio: r.ratio || '16:9', durationSec: r.finalDurationSec || 0, rendered, burnedSubtitles: rendered,
-        renderUrl: rendered ? `/api/remix/jobs/${job.id}/export?format=mp4&inline=1` : null,
+        kind: 'remix', refId: job.id, title: r.plan?.title || job.source.title, ratio: r.ratio || '16:9', durationSec: r.finalDurationSec || 0, rendered: rendered || Boolean(lib), burnedSubtitles: rendered || Boolean(lib), renderedBy: rendered ? 'ffmpeg' : lib ? 'browser' : null,
+        renderUrl: rendered ? `/api/remix/jobs/${job.id}/export?format=mp4&inline=1` : lib ? lib.url : null,
         source: sourceSpec(job.source), items: (r.timeline || []).map((t) => ({ kind: t.kind, start: t.start, end: t.end, speed: t.speed || 1, title: t.title || null, newStart: t.newStart, newEnd: t.newEnd, section: t.section || null, cta: Boolean(t.cta), channel: t.channel || null })),
         subtitles: (r.subtitles || []).filter((s) => !s.card).map(sub), hook: r.plan?.hook ? { text: r.plan.hook, durationSec: r.styleProfile?.hookDurationSec || 3 } : null,
         sfx: r.sfx || [], narration: r.narration?.lines || [], templateId: r.template?.id || null, transcriptExact: r.transcriptExact ?? null, thumbnail: job.source.thumbnail || null,
@@ -171,8 +230,9 @@ export class LibraryService {
       const items = (r.timeline || []).map((k) => { const it = { kind: 'source', start: k.start, end: k.end, speed: 1, newStart: round(cursor), newEnd: round(cursor + k.end - k.start) }; cursor += k.end - k.start; return it; });
       // 자막은 원본 시간 기준 → 새 타임라인 시간으로 변환
       const toNew = (t) => { for (const it of items) if (t >= it.start && t <= it.end) return round(it.newStart + (t - it.start)); const before = items.filter((it) => it.end <= t).pop(); return before ? before.newEnd : 0; };
+      const lib = this._libRender(userId, 'longform', job.id);
       return {
-        kind: 'longform', refId: job.id, title: job.source.title, ratio: '16:9', durationSec: round(cursor), rendered: false, burnedSubtitles: false, renderUrl: null,
+        kind: 'longform', refId: job.id, title: job.source.title, ratio: '16:9', durationSec: round(cursor), rendered: Boolean(lib), burnedSubtitles: Boolean(lib), renderUrl: lib ? lib.url : null, renderedBy: lib ? 'browser' : null,
         source: sourceSpec(job.source), items, subtitles: (r.subtitles || []).map((s) => ({ start: toNew(s.start), end: toNew(s.end), text: s.text })), hook: null,
         chapters: (r.chapters || []).map((c) => ({ at: toNew(c.at), title: c.title })), transcriptExact: r.transcriptExact ?? null, thumbnail: job.source.thumbnail || null,
         seo: r.seo || null, thumbnailSet: job.thumbnailSet ? { ...job.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/longform/${job.id}/image.svg?v=${encodeURIComponent(job.thumbnailSet.updatedAt)}` } : null,

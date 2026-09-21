@@ -350,3 +350,32 @@ test('시스템: 상태 점검, 오류 로그, 백업/복원(병합), 사용량'
   assert.equal(a.errors.clear() >= 1, true);
   a.close();
 });
+
+test('브라우저 렌더 결과 저장: 조각 업로드 → 합쳐서 보관함 파일 → 미리보기가 렌더 파일을 재생, 썸네일 SVG 는 배경 사진을 base64 로 포함', async () => {
+  const a = new AlphaMan({ memory: true, platform: 'test', dataDir: `${process.env.TMPDIR || '/tmp'}/alphaman-test-${Date.now()}` });
+  const { user } = a.auth.signup({ email: 'br@test.com', password: 'secret1', name: 'BR' });
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120 }, transcriptText: SRT });
+  await waitFor(() => a.shorts.getJob(user.id, job.id).status === 'done');
+  const clipId = a.shorts.getJob(user.id, job.id).clips[0].id;
+  const item = a.library.list(user.id, { kind: 'shorts' }).items.find((x) => x.refId === clipId);
+  assert.ok(item && !item.rendered);
+  const data = Buffer.from('WEBM-FAKE-'.repeat(1000));
+  const p1 = await a.library.saveBrowserRender(user.id, item.id, { uploadId: 'up1', part: 0, parts: 2, mime: 'video/webm', buffer: data.subarray(0, 5000) });
+  assert.equal(p1.done, false);
+  const p2 = await a.library.saveBrowserRender(user.id, item.id, { uploadId: 'up1', part: 1, parts: 2, mime: 'video/webm', buffer: data.subarray(5000) });
+  assert.equal(p2.done, true); assert.equal(p2.size, data.length);
+  const f = a.library.videoFile(user.id, item.id);
+  assert.ok(f.path && f.ext === 'webm');
+  assert.equal(a.library.list(user.id, {}).items.find((x) => x.id === item.id).rendered, true);
+  const spec = a.library.previewSpec(user.id, 'shorts', clipId);
+  assert.equal(spec.rendered, true); assert.equal(spec.renderedBy, 'browser'); assert.equal(spec.burnedSubtitles, true); assert.match(spec.renderUrl, /\/api\/library\/.+\/video/);
+  assert.ok(a.notifications.list(user.id, {}).some((n) => n.type === 'render.done'));
+  // 썸네일: 브라우저 캡처 프레임을 배경으로 쓰면 image.svg 안에 data URI 로 들어간다
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  const frame = await a.thumbnail.addUserFrame(user.id, 'shorts', clipId, { buffer: png, at: 1, mime: 'image/png' });
+  await a.thumbnail.update(user.id, 'shorts', clipId, { candidateId: frame.id, headline: '테스트', style: 'bold' });
+  const svg = await a.thumbnail.svgInline(user.id, 'shorts', clipId);
+  assert.match(svg, /href="data:image\/png;base64,/);
+  assert.ok(!/href="\/api\//.test(svg), '외부 URL 참조가 남지 않는다');
+  a.close();
+});
