@@ -85,12 +85,13 @@ export class AlphaMan {
     this.auth.seedAdmin();
     this.publish.start();
     // 무료 TTS 엔진(네트워크) 탐색은 백그라운드로 (테스트에서는 생략)
-    if (platform !== 'test' && process.env.ALPHAMAN_TTS_DETECT !== 'off') this.voice.detectFreeEngines().catch(() => {});
+    // 서버리스(Vercel)는 응답 뒤 함수가 동결되어 백그라운드 탐색이 타임아웃으로 끝나므로, 거기서는 요청 안에서(ensureDetected) 확인한다
+    if (platform !== 'test' && !process.env.VERCEL && process.env.ALPHAMAN_TTS_DETECT !== 'off') this.voice.detectFreeEngines().catch(() => {});
   }
 
   async info() {
     // 무료 TTS 탐색이 끝났으면 반영하되, 페이지 로딩을 막지 않도록 최대 0.3초만 기다린다
-    if (this.platform !== 'test' && process.env.ALPHAMAN_TTS_DETECT !== 'off') await Promise.race([this.voice.detectFreeEngines().catch(() => {}), new Promise((r) => setTimeout(r, 300))]);
+    if (this.platform !== 'test' && process.env.ALPHAMAN_TTS_DETECT !== 'off') await this.voice.ensureDetected(process.env.VERCEL ? 4000 : 300);
     return {
       name: 'AlphaMan', version: VERSION, platform: this.platform, locales: LOCALES,
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,

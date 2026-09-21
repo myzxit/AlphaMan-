@@ -196,8 +196,9 @@ export function buildApi(app) {
   });
 
   // ---- 내 목소리 TTS ----
-  r.get('/api/voice/free', async () => ({ voices: app.voice.freeVoices(), providers: app.voice.providers(), styles: (await import('@alphaman/core')).VOICE_STYLES }));
-  r.get('/api/voice/profiles', async (ctx) => ({ profiles: app.voice.list(auth(ctx).id), providers: app.voice.providers(), freeVoices: app.voice.freeVoices() }));
+  // 서버리스에서는 요청 안에서만 네트워크가 살아 있으므로, 무료 엔진(Edge/Google) 탐색을 여기서 잠깐 기다려 실제 엔진을 표시한다
+  r.get('/api/voice/free', async () => { if (app.platform !== 'test') await app.voice.ensureDetected(4000); return { voices: app.voice.freeVoices(), providers: app.voice.providers(), styles: (await import('@alphaman/core')).VOICE_STYLES }; });
+  r.get('/api/voice/profiles', async (ctx) => { const u = auth(ctx); if (app.platform !== 'test') await app.voice.ensureDetected(4000); return { profiles: app.voice.list(u.id), providers: app.voice.providers(), freeVoices: app.voice.freeVoices() }; });
   r.get('/api/voice/profiles/:id/sample', async (ctx) => { const f = app.voice.sampleFile(auth(ctx).id, ctx.params.id); if (f.redirect) { ctx.res.writeHead(302, { Location: f.redirect }); ctx.res.end(); return { _sent: true }; } return { _file: f.path, mime: f.mime, filename: f.filename, inline: true }; });
   r.post('/api/voice/profiles', async (ctx) => {
     const user = auth(ctx);
