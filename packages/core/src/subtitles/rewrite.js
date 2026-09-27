@@ -23,7 +23,7 @@ const EN_SYNONYMS = [
 export function paraphraseLine(text, { language = 'ko', seed = 0 } = {}) {
   let t = String(text || '').trim();
   if (!t) return t;
-  const isKo = language.startsWith('ko') || /[가-힣]/.test(t);
+  const isKo = /[가-힣]/.test(t); // 언어 설정과 무관하게 실제 한글 문장에만 한국어 규칙
   if (isKo) {
     // 동의어: 줄마다 다른 항목부터 시도해 문장마다 표현이 달라지게 (최대 2곳)
     let swapped = 0;

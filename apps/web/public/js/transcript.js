@@ -54,10 +54,11 @@ export function transcriptPanel(prefix, { info = null } = {}) {
     <div class="row row-between"><b>📝 원본 대본 (자막을 원본과 똑같이)</b><span class="badge badge-soft" id="${prefix}-tp-state">대본 없음</span></div>
     <div class="tiny muted" id="${prefix}-tp-status" style="margin-top:4px">파일을 올리면 브라우저에서 Whisper 로 원본 음성을 그대로 받아 적습니다 (처음 한 번 모델 다운로드). 유튜브 링크는 영상의 자막(자동 생성 포함)을 자동으로 가져오고, 자막이 없는 영상만 대본을 붙여넣으면 됩니다.</div>
     <div class="progress hidden" id="${prefix}-tp-bar-wrap" style="margin-top:6px"><div id="${prefix}-tp-bar" style="width:0"></div></div>
+    <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button class="btn btn-sm" id="${prefix}-tp-fetch" title="유튜브 링크의 자막(자동 생성 포함)을 가져옵니다">🔗 링크 자막 가져오기</button><button class="btn btn-sm btn-primary" id="${prefix}-tp-rewrite" title="원본 대본의 뜻은 그대로 두고 표현만 바꿔 원본과 거의 비슷한 새 대본을 만듭니다">✍️ 원본과 비슷하게 다시 쓰기</button><button class="btn btn-sm hidden" id="${prefix}-tp-restore">원본 대본으로 되돌리기</button></div>
     <details style="margin-top:8px"><summary class="small">대본 붙여넣기 / 확인 · 수정</summary>
       <div class="tiny muted" style="margin:6px 0">${linkNote} 지원 형식: 유튜브 스크립트 복사본( <code>0:00</code> 줄 + 문장 ), SRT, <code>[mm:ss] 문장</code>, 또는 문장만 줄바꿈.</div>
       <textarea id="${prefix}-tp-text" rows="6" placeholder="0:00&#10;안녕하세요 오늘은&#10;0:04&#10;이 영상에서는 ..."></textarea>
-      <div class="row" style="margin-top:6px;align-items:center;gap:8px;flex-wrap:wrap"><label class="tiny muted">브라우저 Whisper 모델</label><select id="${prefix}-tp-model" style="width:auto">${raw(STT_MODELS.map(([v, l]) => `<option value="${v}" ${v === sttModel() ? 'selected' : ''}>${esc(l)}</option>`).join(''))}</select><button class="btn btn-sm" id="${prefix}-tp-redo">파일 대본 다시 추출</button><button class="btn btn-sm" id="${prefix}-tp-fetch">🔗 링크 자막 가져오기</button><button class="btn btn-sm btn-primary" id="${prefix}-tp-rewrite" title="원본 대본의 뜻은 그대로 두고 표현만 바꿔 원본과 거의 비슷한 새 대본을 만듭니다">✍️ 원본과 비슷하게 다시 쓰기</button><button class="btn btn-sm hidden" id="${prefix}-tp-restore">원본 대본으로 되돌리기</button></div>
+      <div class="row" style="margin-top:6px;align-items:center;gap:8px;flex-wrap:wrap"><label class="tiny muted">브라우저 Whisper 모델</label><select id="${prefix}-tp-model" style="width:auto">${raw(STT_MODELS.map(([v, l]) => `<option value="${v}" ${v === sttModel() ? 'selected' : ''}>${esc(l)}</option>`).join(''))}</select><button class="btn btn-sm" id="${prefix}-tp-redo">파일 대본 다시 추출</button></div>
     </details></div>`;
 }
 
@@ -103,6 +104,7 @@ export function transcriptController(prefix, { language = () => 'ko' } = {}) {
   }
   // 원본과 비슷하게 다시 쓰기 (뜻·타이밍 유지, 표현만 변경)
   async function rewrite() {
+    for (let i = 0; i < 100 && state.busy; i++) await new Promise((r) => setTimeout(r, 200)); // 자막 가져오기/추출이 진행 중이면 끝날 때까지 기다린다
     let segs = state.segments; const text = (el('text')?.value || '').trim();
     const body = segs && segs.length ? { segments: segs, language: language() } : text ? { text, language: language() } : null;
     if (!body) { status('다시 쓸 대본이 없습니다. 먼저 링크 자막을 가져오거나 파일 대본을 추출하거나 대본을 붙여넣어 주세요.'); return null; }

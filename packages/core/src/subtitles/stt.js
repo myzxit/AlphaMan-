@@ -135,9 +135,11 @@ async function _fetchYoutubeCaptionsDirect(videoId, language) {
     const tracks = info.captionTracks || [];
     if (!tracks.length) return null;
     const base = (l) => String(l || '').split('-')[0];
+    const spoken = tracks.find((t) => t.kind === 'asr'); // 자동 생성 자막은 영상의 원래 음성 언어에만 있다
     const pick = tracks.find((t) => t.lang === language && !t.kind) || tracks.find((t) => base(t.lang) === base(language) && !t.kind)
       || tracks.find((t) => t.lang === language) || tracks.find((t) => base(t.lang) === base(language))
-      || tracks.find((t) => !t.kind) || tracks[0];
+      || (spoken && (tracks.find((t) => base(t.lang) === base(spoken.lang) && !t.kind) || spoken))
+      || tracks.find((t) => base(t.lang) === 'en' && !t.kind) || tracks.find((t) => !t.kind) || tracks[0];
     const res = await fetch(`${pick.url}${pick.url.includes('?') ? '&' : '?'}fmt=json3`, { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     const text = await res.text();
