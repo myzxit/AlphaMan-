@@ -13,6 +13,6 @@
     "test": "node --test test/"
   },
   "dependencies": {
-    "@alphaman/core": "1.0.0"
+    "@alphaman/core": "^1.0.1"
   }
 }
