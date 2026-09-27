@@ -5,6 +5,7 @@ import * as pub from './pages-public.js';
 import * as appPages from './pages-app.js';
 import * as remixPages from './pages-remix.js';
 import * as libraryPages from './pages-library.js';
+import * as metaPages from './pages-metaremix.js';
 import * as admin from './pages-admin.js';
 import { initShortcuts, showShortcutHelp } from './shortcuts.js';
 import { initOfflineBanner } from './autosave.js';
@@ -24,6 +25,7 @@ const ROUTES = [
   ['/dashboard', appPages.dashboard], ['/studio', appPages.studio], ['/studio/:id', appPages.studioJob], ['/longform', appPages.longform], ['/longform/:id', appPages.longform],
   ['/subtitles', appPages.subtitles], ['/subtitles/:id', appPages.subtitleEditor], ['/discovery', appPages.discovery], ['/discovery/:tab', appPages.discovery],
   ['/remix', remixPages.remix], ['/remix/:id', remixPages.remixJob], ['/voice', remixPages.voice], ['/library', libraryPages.library],
+  ['/metaremix', metaPages.metaremix], ['/metaremix/:id', metaPages.metaremix],
   ['/publish', appPages.publish], ['/topic', appPages.topic], ['/translate', appPages.translate], ['/account', appPages.account], ['/support', appPages.support], ['/support/:id', appPages.support], ['/credits', appPages.credits],
   ['/admin', admin.dashboard], ['/admin/:section', admin.section], ['/admin/:section/:id', admin.section],
   // 추가 플랫폼 기능 (기존 라우트는 그대로, 새 경로만 추가)
@@ -79,7 +81,7 @@ async function render() {
 // 라우트별 제목/설명 (SEO · 공유 미리보기). 공개 페이지는 canonical 을 해시 라우트로 유지
 const PAGE_META = { '/': ['AlphaMan - AI 하이라이트 쇼츠 자동 제작 · AI 자막 편집기', null], '/pricing': ['가격 안내 · AlphaMan', '원본 영상 길이만큼 차감되는 이용권 요금제'], '/guide': ['사용 가이드 · AlphaMan', '가입부터 업로드까지 7단계'], '/faq': ['FAQ · AlphaMan', '자주 묻는 질문'], '/tools': ['무료 도구 · AlphaMan', '로그인 없이 쓰는 크리에이터 유틸리티'], '/download': ['프로그램 다운로드 · AlphaMan', 'Windows · macOS · Linux 설치 파일'], '/login': ['로그인 · AlphaMan', null], '/signup': ['무료로 시작하기 · AlphaMan', null], '/projects': ['프로젝트 · AlphaMan', null], '/jobs': ['작업 센터 · AlphaMan', null], '/media': ['파일 관리자 · AlphaMan', null], '/settings': ['설정 · AlphaMan', null], '/library': ['보관함 · AlphaMan', null] };
 function updateSeo(path) {
-  const [title, desc] = PAGE_META[path] || [`${({ '/studio': '쇼츠 스튜디오', '/remix': 'AI 재구성', '/voice': '내 목소리 TTS', '/longform': '롱폼 컷편집', '/subtitles': '자막 편집기', '/dashboard': '대시보드', '/admin': '관리자' })[`/${path.split('/')[1]}`] || 'AlphaMan'} · AlphaMan`, null];
+  const [title, desc] = PAGE_META[path] || [`${({ '/studio': '쇼츠 스튜디오', '/remix': 'AI 재구성', '/voice': '내 목소리 TTS', '/longform': '롱폼 컷편집', '/metaremix': '썸네일·제목·태그 리믹스', '/subtitles': '자막 편집기', '/dashboard': '대시보드', '/admin': '관리자' })[`/${path.split('/')[1]}`] || 'AlphaMan'} · AlphaMan`, null];
   document.title = title;
   const set = (sel, attr, val) => { const el = document.querySelector(sel); if (el && val != null) el.setAttribute(attr, val); };
   set('meta[property="og:title"]', 'content', title); set('meta[name="twitter:title"]', 'content', title);
@@ -104,7 +106,7 @@ window.addEventListener('unhandledrejection', (e) => { const r = e.reason; if (r
 
 const NAV = [
   { group: '시작', items: [['/', '🏠', '홈'], ['/dashboard', '📊', '대시보드', true], ['/projects', '📂', '프로젝트', true], ['/library', '📁', '보관함', true], ['/jobs', '⚙️', '작업 센터', true], ['/media', '🗂️', '파일 관리자', true]] },
-  { group: '알파컷 · 쇼츠', items: [['/studio', '✂️', '쇼츠 스튜디오', true], ['/remix', '🪄', 'AI 재구성', true], ['/voice', '🎤', '내 목소리 TTS', true], ['/longform', '🎬', '롱폼 컷편집', true], ['/publish', '📤', 'SNS 업로드', true], ['/topic', '📈', '알파토픽', true], ['/translate', '🌐', '다국어 번역', true]] },
+  { group: '알파컷 · 쇼츠', items: [['/studio', '✂️', '쇼츠 스튜디오', true], ['/remix', '🪄', 'AI 재구성', true], ['/voice', '🎤', '내 목소리 TTS', true], ['/longform', '🎬', '롱폼 컷편집', true], ['/metaremix', '🎨', '썸네일·제목 리믹스', true], ['/publish', '📤', 'SNS 업로드', true], ['/topic', '📈', '알파토픽', true], ['/translate', '🌐', '다국어 번역', true]] },
   { group: '픽셀링 · 자막', items: [['/subtitles', '💬', '자막 편집기', true], ['/discovery', '🔥', '디스커버리']] },
   { group: '더보기', items: [['/settings', '🛠️', '설정', true], ['/pricing', '💳', '가격 안내'], ['/tools', '🧰', '무료 도구'], ['/guide', '📖', '사용 가이드'], ['/faq', '❓', 'FAQ'], ['/referral', '🎁', '추천인 보상'], ['/support', '🛟', '문의하기', true], ['/notices', '📢', '공지사항'], ['/download', '💾', '프로그램 다운로드']] },
 ];

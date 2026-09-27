@@ -28,6 +28,7 @@ import { ShareService } from './share.js';
 import { PaymentService } from './payments.js';
 import { ErrorLogService, SystemService, BackupService, UsageService } from './system.js';
 import { ThumbnailService, THUMB_STYLES, THUMB_PALETTES } from './thumbnail.js';
+import { MetaRemixService, META_FX_DEFAULTS } from './metaremix.js';
 import { toolAvailability } from './media.js';
 import { LOCALES } from './i18n.js';
 import { CONTENT } from './content.js';
@@ -55,6 +56,7 @@ export class AlphaMan {
     this.library = new LibraryService({ store: this.store, notifications: this.notifications, outputDir: this.outputDir });
     this.seo = new SeoService({ ai: this.ai });
     this.thumbnail = new ThumbnailService({ store: this.store, outputDir: this.outputDir, library: this.library });
+    this.metaremix = new MetaRemixService({ store: this.store, ai: this.ai, seo: this.seo, outputDir: this.outputDir }); // 썸네일·제목·태그 리믹스 (링크/파일 → 원본과 비슷한 새 썸네일·제목·태그)
     this.activity = new ActivityService({ store: this.store, notifications: this.notifications });
     this.errors = new ErrorLogService({ store: this.store });
     this.shorts = new ShortsEngine({ store: this.store, credits: this.credits, ai: this.ai, translate: this.translate, notifications: this.notifications, uploadsDir: this.uploadsDir, outputDir: this.outputDir, voice: this.voice, library: this.library, seo: this.seo, thumbnail: this.thumbnail, activity: this.activity });
@@ -95,7 +97,7 @@ export class AlphaMan {
     return {
       name: 'AlphaMan', version: VERSION, platform: this.platform, locales: LOCALES,
       plans: PLANS, addonPlans: ADDON_PLANS, platforms: PLATFORMS,
-      tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), freeVoices: this.voice.freeVoices(), remixLimits: REMIX_LIMITS, libraryKinds: LIBRARY_KINDS, thumbStyles: THUMB_STYLES, thumbPalettes: THUMB_PALETTES,
+      tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), freeVoices: this.voice.freeVoices(), remixLimits: REMIX_LIMITS, libraryKinds: LIBRARY_KINDS, thumbStyles: THUMB_STYLES, thumbPalettes: THUMB_PALETTES, metaFxDefaults: META_FX_DEFAULTS,
       projectKinds: Object.fromEntries(Object.entries(PROJECT_KINDS).map(([k, v]) => [k, v.label])), activityKinds: ACTIVITY_KINDS, mediaCategories: MEDIA_CATEGORIES, templateKinds: TEMPLATE_KINDS, payments: this.payments.config(), uploadLimits: UPLOAD_LIMITS,
       // 대본 정확도: 브라우저 Whisper(파일) · 붙여넣은 대본 · 서버 whisper · yt-dlp 유튜브 자막만 사용하고, 추정 대본은 만들지 않는다
       transcript: { simulatedAllowed: process.env.ALPHAMAN_ALLOW_SIMULATED_STT === '1', serverWhisper: Boolean(toolAvailability().whisper), youtubeCaptions: process.env.ALPHAMAN_YT_CAPTIONS !== 'off' || Boolean(toolAvailability().ytdlp) }, // 유튜브 자막은 yt-dlp 없이도 직접 가져온다
@@ -140,6 +142,7 @@ export { REMIX_LIMITS, REMIX_DEFAULTS } from './remix.js';
 export { VOICE_STYLES, FREE_VOICES, DEFAULT_FREE_VOICE } from './voice.js';
 export { SeoService, extractKeywords } from './seo.js';
 export { ThumbnailService, THUMB_STYLES, THUMB_PALETTES, composeSvg } from './thumbnail.js';
+export { MetaRemixService, META_FX_DEFAULTS, rulesGenerate as metaRulesGenerate, normalizeTags } from './metaremix.js';
 export { LIBRARY_KINDS } from './library.js';
 export { PROJECT_KINDS } from './workspace.js';
 export { ACTIVITY_KINDS, JobQueue, CancelledError } from './activity.js';

@@ -191,6 +191,8 @@ label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 4px;
 .seo-title { padding: 8px 6px; border-bottom: 1px dashed var(--border); cursor: pointer; } .seo-title:hover { background: var(--primary-soft); border-radius: 8px; }
 .thumb-editor { display: grid; grid-template-columns: 1.1fr .9fr; gap: 16px; }
 .thumb-preview { background: #000; border-radius: 12px; overflow: hidden; display: grid; place-items: center; } .thumb-preview img { width: 100%; max-height: 60vh; object-fit: contain; }
+/* 썸네일·제목·태그 리믹스: 입력 모드 탭 · 선택된 제목 */
+.mr-tabs .btn.active { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); } .seo-title.active { background: var(--primary-soft); border-radius: 8px; }
 .thumb-cands { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
 .thumb-cand { border: 2px solid var(--border); border-radius: 10px; padding: 4px; cursor: pointer; text-align: center; } .thumb-cand.active { border-color: var(--primary); background: var(--primary-soft); }
 .thumb-cand img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #000; }

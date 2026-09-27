@@ -9,6 +9,7 @@ const COLLECTIONS = [
   'inquiries', 'notifications', 'feedback', 'notices', 'referrals', 'teamRequests',
   'payments', 'pixieThreads', 'uploads', 'settings', 'auditLog', 'remixJobs', 'voiceProfiles', 'voiceRenders', 'library',
   'activities', 'versions', 'userTemplates', 'shares', 'orders', 'errorLog', 'workspaceState', 'backups', 'renderUploads',
+  'metaRemixes', // 썸네일·제목·태그 리믹스 기록 (원본 정보 + 새로 만든 결과 + 썸네일 설정)
   'tombstones', // 삭제 기록 {collection,id,at} — 여러 서버 인스턴스의 저장소를 병합할 때 삭제가 되살아나지 않도록
 ];
 const MAX_TOMBSTONES = 3000;

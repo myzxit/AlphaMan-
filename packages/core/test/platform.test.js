@@ -576,3 +576,40 @@ test('대본 다시 쓰기(원본과 비슷하게): 규칙 기반은 줄 수·�
   assert.equal(bad.options.scriptMode, 'original');
   await a.activity.queue.idle(8000);
 });
+
+test('썸네일·제목·태그 리믹스: 파일(캡처 장면+제목+태그) → 원본과 다른 새 제목 후보·태그·썸네일(SVG, 효과) · 수정 · 다시 생성 · 삭제', async () => {
+  const { metaRulesGenerate, normalizeTags, composeSvg } = await import('../src/index.js');
+  const a = app();
+  const { user } = a.auth.signup({ email: 'meta@test.com', password: 'secret1', name: 'M' });
+  const png = `data:image/png;base64,${Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64')}`;
+  const rec = await a.metaremix.create(user.id, { filename: '서울_카페_투어_브이로그.mp4', tags: '카페, 서울, 브이로그', frameDataUrl: png, width: 1920, height: 1080 });
+  assert.equal(rec.source.type, 'file'); assert.equal(rec.original.title, '서울 카페 투어 브이로그'); assert.deepEqual(rec.original.tags, ['카페', '서울', '브이로그']);
+  assert.equal(rec.result.engine, 'rules'); assert.ok(rec.result.titles.length >= 3);
+  assert.ok(rec.result.titles.every((t) => t !== rec.original.title), '새 제목은 원본과 같지 않다');
+  assert.ok(rec.result.tags.length >= 3); assert.ok(rec.result.hashtags.length >= 1);
+  assert.equal(rec.selected.title, rec.result.titles[0]); assert.ok(rec.thumb.headline); assert.equal(rec.thumb.width, 1280); assert.equal(rec.thumb.height, 720);
+  assert.ok(rec.image?.size > 0, '캡처 장면이 원본 이미지로 저장됨');
+  const svg = await a.metaremix.svgInline(user.id, rec.id);
+  assert.match(svg, /data:image\/png;base64,/); assert.doesNotMatch(svg, /scale\(-1 1\)/, '좌우 반전은 기본 꺼짐 (원본 글자가 뒤집히므로)'); assert.match(svg, /feColorMatrix/, '기본 효과: 채도'); assert.match(svg, /<g transform="[^"]*scale\(1\.06\)/, '기본 효과: 살짝 확대');
+  const upd = a.metaremix.update(user.id, rec.id, { headline: '새 문구', subline: '작은 문구', style: 'bold', palette: 'red', fx: { mirror: true, zoom: 1, tint: false, saturate: 1 }, title: '내가 고른 제목', tags: '태그1, #태그2, 태그1' });
+  assert.equal(upd.thumb.style, 'bold'); assert.equal(upd.selected.title, '내가 고른 제목'); assert.deepEqual(upd.selected.tags, ['태그1', '태그2']);
+  const svg2 = await a.metaremix.svgInline(user.id, rec.id);
+  assert.match(svg2, /scale\(-1 1\)/, '좌우 반전 옵션'); assert.doesNotMatch(svg2, /feColorMatrix/); assert.match(svg2, /새 문구/);
+  const again = await a.metaremix.regenerate(user.id, rec.id);
+  assert.equal(again.seed, 1); assert.ok(again.result.titles.length >= 3); assert.equal(again.original.title, rec.original.title, '원본은 그대로');
+  assert.equal(a.metaremix.list(user.id).length, 1); assert.ok(!a.metaremix.list(user.id)[0].result, '목록은 가벼운 요약');
+  const other = a.auth.signup({ email: 'meta2@test.com', password: 'secret1', name: 'M2' }).user;
+  assert.throws(() => a.metaremix.get(other.id, rec.id), /찾을 수 없습니다/);
+  assert.deepEqual(a.metaremix.remove(user.id, rec.id), { ok: true }); assert.equal(a.metaremix.list(user.id).length, 0);
+  await assert.rejects(a.metaremix.create(user.id, {}), /링크를 넣거나/);
+  await assert.rejects(a.metaremix.create(user.id, { url: 'https://example.com/x' }), /유튜브|URL|주소/);
+  // 규칙 엔진 단독: 영어 제목은 영어 규칙, 개수는 유지(TOP N), 유의어 치환, 원본과 동일한 후보 없음
+  const en = metaRulesGenerate({ title: '10 Tips to Learn English Faster', tags: ['english', 'tips'], description: '' }, { keywords: ['english', 'tips', 'learn', 'faster'], seed: 0, language: 'en' });
+  assert.ok(en.titles.some((t) => /^Top 10 Tips/.test(t))); assert.ok(en.titles.every((t) => t !== '10 Tips to Learn English Faster')); assert.ok(en.titles.every((t) => !/[가-힣]/.test(t)));
+  const ko = metaRulesGenerate({ title: '[꿀팁] 자취생을 위한 초간단 요리 5가지 🔥', tags: ['자취요리', '레시피'], description: '' }, { keywords: ['자취요리', '레시피', '자취생'], seed: 0, language: 'ko' });
+  assert.ok(ko.titles.every((t) => t.startsWith('[꿀팁]') && t.endsWith('🔥')), '접두·이모지 유지'); assert.ok(ko.titles.some((t) => /TOP 5/.test(t))); assert.ok(!ko.titles.some((t) => /6가지/.test(t)), '개수를 바꾸지 않는다');
+  assert.deepEqual(normalizeTags('a, #b ,a,, c'), ['a', 'b', 'c']);
+  const plain = composeSvg({ width: 100, height: 50, image: 'data:image/png;base64,AA==', headline: 'x', subline: '', style: 'bold', palette: 'yellow', badge: null });
+  assert.doesNotMatch(plain, /<g transform|feColorMatrix/, 'imageFx 없으면 기존 SVG 와 동일');
+  a.close();
+});

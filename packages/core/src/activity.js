@@ -36,7 +36,7 @@ export class JobQueue {
   stats() { return { concurrency: this.concurrency, running: [...this.running.values()].map((t) => ({ id: t.id, meta: t.meta, startedAt: t.startedAt })), queued: this.waiting.map((w) => ({ id: w.ticket.id, meta: w.ticket.meta, queuedAt: w.ticket.queuedAt })), recent: this.history.slice(0, 20) }; }
 }
 
-export const ACTIVITY_KINDS = { shorts: '쇼츠 제작', remix: 'AI 재구성', longform: '롱폼 컷편집', subtitle: '자막 생성', seo: '유튜브 최적화', thumbnail: '썸네일 제작', tts: 'TTS 합성', translate: '번역', topic: '알파토픽 분석', render: '렌더링', batch: '일괄 작업', import: '프로젝트 가져오기' };
+export const ACTIVITY_KINDS = { shorts: '쇼츠 제작', remix: 'AI 재구성', longform: '롱폼 컷편집', subtitle: '자막 생성', seo: '유튜브 최적화', thumbnail: '썸네일 제작', metaremix: '썸네일·제목·태그 리믹스', tts: 'TTS 합성', translate: '번역', topic: '알파토픽 분석', render: '렌더링', batch: '일괄 작업', import: '프로젝트 가져오기' };
 
 export class ActivityService {
   constructor({ store, notifications = null }) { this.store = store; this.notifications = notifications; this.queue = new JobQueue(); this.runners = {}; }

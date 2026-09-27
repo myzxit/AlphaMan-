@@ -95,6 +95,7 @@
 | 영상 마무리 구독·좋아요·알림 CTA 카드 | 쇼츠 `outro` 옵션 + 재구성 타임라인 `cta` 카드, 미리보기 종료 화면, ffmpeg 렌더 시 이어 붙임 | ✓ | ✓ |
 | 유튜브 최적화: 원본과 비슷한 제목 + 추천 제목 후보/설명/태그/해시태그/업로드 시간/체크리스트 | `seo.js` (`/api/seo/:kind/:id`), 클립·재구성·롱폼 자동 생성, `pages-seo.js` 패널 | ✓ | ✓ |
 | 썸네일 자동 제작(원본과 비슷하게 / 장면 자동 선택) + 편집기(장면·캡처·문구·스타일·색상, PNG/SVG) | `thumbnail.js` (`/api/thumbnail/*`), SVG 조합, 유튜브 프레임·ffmpeg 프레임·브라우저 캡처 | ✓ | ✓ (ffmpeg 프레임 추출) |
+| 썸네일·제목·태그 리믹스: 링크/파일 → 원본 썸네일·제목·태그 → 원본과 거의 비슷한 새 썸네일(효과·문구, PNG/SVG 다운로드)·제목 후보·태그·해시태그·설명, 수정·다시 생성 | `metaremix.js` (`#/metaremix`, `/api/metaremix*`), `pages-metaremix.js`, `composeSvg imageFx`, `seo.js`·`rewrite.js` 규칙 재사용, 이용권 차감 없음 | ✓ | ✓ |
 | 자막 = 원본 대본 그대로 | `stt.js transcribe` — 브라우저 Whisper(`transcript.js`, `stt-worker.js`) / 붙여넣은 대본(`parseTranscriptText`) / 서버 whisper / yt-dlp 유튜브 자막만 사용, 추정 대본 금지(422 안내), "원본 대본 그대로" 배지 | ✓ | ✓ (yt-dlp 자동 설치로 링크 대본 자동) |
 
 ## 4-1. 플랫폼 기능 (기존 기능은 그대로, 추가만)
