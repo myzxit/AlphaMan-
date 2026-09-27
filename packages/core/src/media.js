@@ -215,7 +215,7 @@ export const constants = { SUPPORTED_EXT, RECOMMENDED };
 
 // 원본에 박힌 자막 스타일 분석 (ffmpeg 필요): 여러 시점의 작은 원시 RGB 프레임을 뽑아 자막 띠 위치·글자색·외곽선색·크기를 추정한다.
 // ffmpeg 이 없거나 실패하면 null (호출자가 기본 하단 영역/브라우저 분석을 쓴다)
-export async function detectBurnedSubtitleStyle(filePath, { times = [], width = 160 } = {}) {
+export async function detectBurnedSubtitleStyle(filePath, { times = [], width = 320 } = {}) {
   if (!which('ffmpeg') || !filePath || !fs.existsSync(filePath)) return null;
   const { analyzeSubtitleFrames } = await import('./subtitles/burned.js');
   const frames = [];

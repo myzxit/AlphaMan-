@@ -165,7 +165,7 @@ export async function renderInBrowser(spec, { onProgress = () => {}, onPreview =
 export async function detectSubtitleBand(video, items, { vw, vh, signal = null, samples = 10 } = {}) {
   const srcItems = items.filter((it) => it.kind !== 'card' && it.end > it.start);
   if (!srcItems.length || !video.duration) return null;
-  const w = 160; const h = Math.max(60, Math.round(160 * vh / vw)); const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true });
+  const w = 320; const h = Math.max(120, Math.round(320 * vh / vw)); const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true });
   const rowHits = new Float32Array(h); let frames = 0;
   const textRgb = [0, 0, 0]; let textN = 0; const outRgb = [0, 0, 0]; let outN = 0;
   const seekTo = (t) => new Promise((res) => { const done = () => { video.removeEventListener('seeked', done); res(); }; video.addEventListener('seeked', done); video.currentTime = Math.max(0, Math.min(video.duration - 0.05, t)); setTimeout(res, 1500); });
@@ -178,24 +178,33 @@ export async function detectSubtitleBand(video, items, { vw, vh, signal = null, 
     await seekTo(t);
     try { g.drawImage(video, 0, 0, w, h); } catch { continue; }
     const d = g.getImageData(0, 0, w, h).data; frames += 1;
-    for (let y = 1; y < h - 1; y++) {
-      let n = 0;
-      for (let x = 1; x < w - 1; x++) {
-        if (lumAt(d, x, y) < 190) continue;
-        // 밝은 픽셀 주변(상하좌우)에 어두운 픽셀이 있으면 글자 외곽선으로 본다
-        let dark = null;
-        for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) { if (lumAt(d, x + dx, y + dy) < 70) { dark = [x + dx, y + dy]; break; } }
-        if (!dark) continue;
-        n += 1;
-        const p = (y * w + x) * 4; textRgb[0] += d[p]; textRgb[1] += d[p + 1]; textRgb[2] += d[p + 2]; textN += 1;
-        const q = (dark[1] * w + dark[0]) * 4; outRgb[0] += d[q]; outRgb[1] += d[q + 1]; outRgb[2] += d[q + 2]; outN += 1;
+    const maxRun = Math.max(4, Math.round(w * 0.06)); // 글자 획은 짧은 밝은 조각, 밝은 박스/지평선 모서리는 긴 연속 조각 → 제외 (서버 burned.js 와 같은 기준)
+    const brightRow = new Uint8Array(w);
+    for (let y = 2; y < h - 2; y++) {
+      for (let x = 0; x < w; x++) brightRow[x] = lumAt(d, x, y) >= 170 ? 1 : 0;
+      let n = 0; let runs = 0; let x = 2;
+      while (x < w - 2) {
+        if (!brightRow[x]) { x += 1; continue; }
+        let e = x; while (e < w - 2 && brightRow[e]) e += 1;
+        if (e - x <= maxRun) {
+          runs += 1;
+          for (let xx = x; xx < e; xx++) {
+            let dark = null;
+            for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-2, 0], [2, 0], [0, -2], [0, 2]]) { if (lumAt(d, xx + dx, y + dy) < 90) { dark = [xx + dx, y + dy]; break; } }
+            if (!dark) continue;
+            n += 1;
+            const p = (y * w + xx) * 4; textRgb[0] += d[p]; textRgb[1] += d[p + 1]; textRgb[2] += d[p + 2]; textN += 1;
+            const q = (dark[1] * w + dark[0]) * 4; outRgb[0] += d[q]; outRgb[1] += d[q + 1]; outRgb[2] += d[q + 2]; outN += 1;
+          }
+        }
+        x = e;
       }
-      rowHits[y] += n / w;
+      if (runs >= 3) rowHits[y] += n / w; // 글자 행은 여러 획 조각으로 이루어진다
     }
   }
   if (!frames) return null;
   const avg = Array.from(rowHits, (v) => v / frames); const max = Math.max(...avg);
-  if (max < 0.06) return null; // 글자 외곽선 특징이 거의 없음 → 박힌 자막 없음
+  if (max < 0.02) return null; // 글자 외곽선 특징이 거의 없음 → 박힌 자막 없음
   const thr = max * 0.35; let best = null; let start = -1;
   for (let y = 0; y <= h; y++) {
     const on = y < h && avg[y] >= thr;
