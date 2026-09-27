@@ -1,6 +1,6 @@
 {
   "name": "@alphaman/desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "AlphaMan 프로그램(데스크톱) 버전 - 웹사이트 버전과 동일한 코어/UI 에 컴퓨터·USB 영상 직접 열기, 로컬 렌더링, 트레이 알림 추가",
   "main": "main.cjs",

@@ -32,7 +32,7 @@ import { toolAvailability } from './media.js';
 import { LOCALES } from './i18n.js';
 import { CONTENT } from './content.js';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 
 export class AlphaMan {
   constructor({ dataDir, memory = false, platform = 'web' } = {}) {

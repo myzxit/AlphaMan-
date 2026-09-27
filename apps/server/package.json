@@ -1,6 +1,6 @@
 {
   "name": "@alphaman/server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "AlphaMan API 서버 + 웹사이트 버전 호스팅 (외부 의존성 없음)",
