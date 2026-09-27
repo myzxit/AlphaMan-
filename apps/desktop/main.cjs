@@ -54,20 +54,14 @@ async function ensureFfmpeg() {
 
 async function startEmbeddedServer() {
   // 패키징된 앱에서는 extraResources 로 복사된 코어/서버를, 개발 중에는 워크스페이스를 사용
+  // 패키징된 앱은 electron-builder extraResources 가 app/node_modules/@alphaman/core 를 미리 넣어 두므로(읽기 전용 AppImage·Program Files 에서도 동작)
+  // 실행 시 링크를 만들 필요가 없다
   const serverEntry = isPackaged ? path.join(appRoot, 'apps/server/src/server.js') : path.resolve(__dirname, '../server/src/server.js');
-  if (isPackaged) {
-    // 패키지 내부에서 '@alphaman/core' 를 해석할 수 있도록 node_modules 링크 구성
-    const nm = path.join(appRoot, 'node_modules/@alphaman');
-    fs.mkdirSync(nm, { recursive: true });
-    for (const [name, target] of [['core', 'packages/core'], ['server', 'apps/server']]) {
-      const link = path.join(nm, name);
-      if (!fs.existsSync(link)) { try { fs.symlinkSync(path.join(appRoot, target), link, 'junction'); } catch { fs.cpSync(path.join(appRoot, target), link, { recursive: true }); } }
-    }
-  }
   const { startServer } = await import(require('node:url').pathToFileURL(serverEntry).href);
   const dataDir = path.join(app.getPath('userData'), 'data');
   const webDir = isPackaged ? path.join(appRoot, 'apps/web/public') : path.resolve(__dirname, '../web/public');
-  server = await startServer({ port: Number(process.env.ALPHAMAN_DESKTOP_PORT || 0), host: '127.0.0.1', dataDir, platform: 'desktop', webDir });
+  // 고정 포트(기본 4173, 사용 중이면 다음 포트)를 써서 localStorage(로그인 토큰·설정)가 실행할 때마다 사라지지 않게 한다
+  server = await startServer({ port: Number(process.env.ALPHAMAN_DESKTOP_PORT || 4173), host: '127.0.0.1', dataDir, platform: 'desktop', webDir });
   return server;
 }
 

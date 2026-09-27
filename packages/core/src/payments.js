@@ -46,6 +46,14 @@ export class PaymentService {
   async confirmToss(userId, { paymentKey, orderId, amount }) {
     const order = this.order(userId, orderId);
     if (order.status === 'paid') return this.store.get('payments', order.paymentId);
+    // 같은 주문을 동시에 두 번 승인(더블 클릭)하면 두 번째는 첫 번째 결과를 기다린다
+    if (this._inflight?.has(orderId)) { await this._inflight.get(orderId).catch(() => {}); const again = this.order(userId, orderId); if (again.status === 'paid') return this.store.get('payments', again.paymentId); }
+    this._inflight = this._inflight || new Map();
+    const work = this._confirmToss(userId, order, { paymentKey, orderId, amount });
+    this._inflight.set(orderId, work);
+    try { return await work; } finally { this._inflight.delete(orderId); }
+  }
+  async _confirmToss(userId, order, { paymentKey, orderId, amount }) {
     if (Number(amount) !== Number(order.amount)) throw new ApiError(400, '결제 금액이 주문 금액과 다릅니다. 결제가 승인되지 않았습니다.');
     const k = this.keys();
     if (!k.tossSecret) throw new ApiError(503, '토스페이먼츠 시크릿 키가 설정되지 않았습니다.');
@@ -55,6 +63,8 @@ export class PaymentService {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !['DONE', 'IN_PROGRESS', 'WAITING_FOR_DEPOSIT'].includes(data.status)) {
+      const now = this.store.get('orders', orderId);
+      if (now?.status === 'paid') return this.store.get('payments', now.paymentId); // 그 사이 다른 요청(웹훅 등)이 이미 이행했으면 실패로 되돌리지 않는다
       this.store.update('orders', orderId, { status: 'failed', error: data.message || `승인 실패 (${res.status})`, gatewayCode: data.code || null });
       throw new ApiError(402, `결제 승인에 실패했습니다: ${data.message || res.status}`);
     }
@@ -81,6 +91,8 @@ export class PaymentService {
     const res = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, { headers: { Authorization: `Bearer ${k.stripeSecret}` }, signal: AbortSignal.timeout(20000) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new ApiError(502, `Stripe 확인 실패: ${data.error?.message || res.status}`);
+    // 세션이 정말 이 주문의 것인지 확인 (다른 주문의 결제 세션으로 이 주문을 이행할 수 없다)
+    if ((data.metadata?.orderId || data.client_reference_id) !== orderId) throw new ApiError(400, '결제 세션이 이 주문의 것이 아닙니다.');
     if (data.payment_status !== 'paid') { this.store.update('orders', orderId, { status: 'pending' }); throw new ApiError(402, `아직 결제가 완료되지 않았습니다 (${data.payment_status}).`); }
     if (Math.round(order.amount * 100) !== Number(data.amount_total)) throw new ApiError(400, '결제 금액이 주문과 다릅니다.');
     return this._fulfill(order, { paymentKey: data.payment_intent || data.id, method: 'card', receiptUrl: null, approvedAt: new Date().toISOString(), raw: { amount_total: data.amount_total, currency: data.currency } });
@@ -88,6 +100,10 @@ export class PaymentService {
 
   // 3) 이행: 결제 기록 + 이용권 지급 + 요금제/부가 서비스 반영 (기존 checkout 과 같은 결과)
   _fulfill(order, info) {
+    // 멱등성: 같은 주문(또는 같은 paymentKey)이 이미 이행됐으면 이용권을 다시 지급하지 않는다
+    const current = this.store.get('orders', order.id) || order;
+    const dup = this.store.findOne('payments', (p) => p.orderId === order.id || (info.paymentKey && p.paymentKey === info.paymentKey));
+    if (dup || current.status === 'paid') { if (current.status !== 'paid' && dup) this.store.update('orders', order.id, { status: 'paid', paymentId: dup.id, paidAt: dup.approvedAt || new Date().toISOString() }); return dup || this.store.get('payments', current.paymentId); }
     const plan = this.plan(order.planId);
     const payment = this.store.insert('payments', { userId: order.userId, orderId: order.id, planId: order.planId, region: order.region, method: info.method, currency: order.currency, amount: order.amount, status: 'paid', gateway: order.gateway, paymentKey: info.paymentKey, receiptUrl: info.receiptUrl, approvedAt: info.approvedAt, testMode: order.testMode, raw: info.raw });
     if (plan.minutes) this.credits.grant(order.userId, plan.minutes, `${plan.name} 요금제 결제`, { paymentId: payment.id });
@@ -106,7 +122,8 @@ export class PaymentService {
     if (!orderId) return { ignored: true };
     const order = this.store.get('orders', orderId); if (!order) return { ignored: true };
     if (status === 'DONE' && order.status !== 'paid') { const k = this.keys(); const res = await fetch(`https://api.tosspayments.com/v1/payments/orders/${encodeURIComponent(orderId)}`, { headers: { Authorization: `Basic ${Buffer.from(`${k.tossSecret}:`).toString('base64')}` }, signal: AbortSignal.timeout(15000) }); const data = await res.json().catch(() => ({})); if (res.ok && data.status === 'DONE' && Number(data.totalAmount) === Number(order.amount)) this._fulfill(order, { paymentKey: data.paymentKey, method: data.method, receiptUrl: data.receipt?.url || null, approvedAt: data.approvedAt, raw: { status: data.status } }); }
-    if (['CANCELED', 'EXPIRED', 'ABORTED'].includes(status)) this.store.update('orders', orderId, { status: 'failed', error: status });
+    // 취소/만료 알림은 아직 이행되지 않은 주문에만 반영한다 (서명이 없는 웹훅으로 결제 완료 주문을 되돌릴 수 없도록)
+    if (['CANCELED', 'EXPIRED', 'ABORTED'].includes(status) && this.store.get('orders', orderId)?.status !== 'paid') this.store.update('orders', orderId, { status: 'failed', error: status });
     return { ok: true };
   }
   adminOrders() { return this.store.find('orders').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 500); }

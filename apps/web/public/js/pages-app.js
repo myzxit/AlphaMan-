@@ -1,6 +1,6 @@
 // 앱 페이지: 대시보드, 쇼츠 스튜디오, 롱폼, 자막 편집기, 디스커버리, SNS 업로드, 알파토픽, 번역, 계정, 문의, 이용권
 import { get, post, put, patch, del, uploadFile, downloadUrl, getToken } from './api.js';
-import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtNum, fmtDate, fmtKRW, compactViews, creditsLabel, readVideoMeta, qs, qsa, on, debounce } from './ui.js';
+import { esc, html, raw, toast, modal, confirmDialog, promptDialog, fmtTime, fmtNum, fmtDate, fmtKRW, compactViews, creditsLabel, readVideoMeta, qs, qsa, on, debounce } from './ui.js';
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
 import { openPreview } from './player.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
@@ -17,10 +17,11 @@ export async function prefillUpload(id) {
   try { const { items } = await get('/api/media?category=video'); const m = items.find((x) => x.id === `upload:${id}`); if (!m) { toast('파일을 찾을 수 없습니다. 파일 관리자에서 다시 선택해주세요.', 'error'); return null; } return { id, name: m.name, durationSec: m.durationSec || 0 }; } catch { return null; }
 }
 export async function startShortsFromLanding({ url, file, meta, state, navigate }) {
-  if (!state.user) { try { sessionStorage.setItem('am_pending_url', url || ''); } catch { /* ignore */ } toast('먼저 무료 가입 또는 로그인해주세요.'); return navigate(`/login?next=${encodeURIComponent('/studio')}`); }
+  // 링크는 항상 세션에 담아 두고 스튜디오가 렌더된 뒤 읽는다 (로그인 상태에서도 API 로딩이 끝나기 전에 입력칸이 없어 링크가 사라지던 문제)
+  try { sessionStorage.setItem('am_pending_url', url || ''); } catch { /* ignore */ }
+  if (!state.user) { toast('먼저 무료 가입 또는 로그인해주세요.'); return navigate(`/login?next=${encodeURIComponent('/studio')}`); }
+  if (file) window.__pendingFile = { file, meta };
   navigate('/studio');
-  if (url) setTimeout(() => { const i = qs('#s-url'); if (i) i.value = url; }, 200);
-  if (file) setTimeout(() => window.__pendingFile = { file, meta }, 0);
 }
 
 export const dashboard = auth(async ({ view, state }) => {
@@ -109,7 +110,20 @@ export const studioJob = auth(async ({ view, params, state, navigate }) => {
   let job = await get(`/api/shorts/jobs/${params.id}`);
   let timer = null;
   bindRenderButtons(view, (k, id) => job.clips?.find((c) => c.id === id)?.title || job.source.title);
-  window.addEventListener('am:rendered', () => { get(`/api/shorts/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); }, { once: true });
+  // 브라우저 렌더 저장 후 갱신: 이 페이지에 머무는 동안만 (다른 페이지로 가면 해제)
+  const onRendered = () => { if (!location.hash.startsWith(`#/studio/${job.id}`)) return; get(`/api/shorts/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); };
+  window.addEventListener('am:rendered', onRendered);
+  window.addEventListener('hashchange', () => window.removeEventListener('am:rendered', onRendered), { once: true });
+  // 클릭 핸들러는 한 번만 등록한다 (draw() 는 폴링마다 다시 그려지므로 그 안에 두면 클릭마다 N번 실행된다)
+  on(view, 'click', '[data-edit]', (e, t) => editClipModal(job.clips.find((c) => c.id === t.dataset.edit), templates, ratios, async () => { job = await get(`/api/shorts/jobs/${job.id}`); draw(); }));
+  on(view, 'click', '[data-publish]', (e, t) => navigate(`/publish?clip=${t.dataset.publish}`));
+  on(view, 'click', '[data-preview]', (e, t) => openPreview({ kind: 'shorts', refId: t.dataset.preview }));
+  bindSeoButtons(view);
+  on(view, 'click', '[data-export]', async (e, t) => {
+    const fmt = t.dataset.format;
+    if (fmt === 'mp4') { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=mp4`), { headers: { Authorization: `Bearer ${getToken()}` } }); if ((r.headers.get('content-type') || '').includes('json')) { await r.json().catch(() => ({})); openRenderDialog({ kind: 'shorts', refId: t.dataset.export, title: job.clips?.find((c) => c.id === t.dataset.export)?.title || '' }); } else { const b = await r.blob(); saveBlob(b, `${t.dataset.export}.mp4`); } }
+    else { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } }); saveBlob(await r.blob(), `${t.dataset.export}.${fmt}`); }
+  });
   const draw = () => {
     const stepNames = { queued: '대기', downloading: '영상 가져오기', transcribing: '음성 인식', analyzing: 'AI 하이라이트 분석', editing: '자동 편집', rendering: '렌더링', done: '완료', failed: '실패' };
     view.innerHTML = html`<div class="row row-between"><div><a href="#/studio" class="small">← 스튜디오</a><h1>${job.source.title}</h1><div class="muted small">${job.source.type === 'youtube' ? raw(`<a href="${esc(job.source.url)}" target="_blank" rel="noopener">${esc(job.source.url)}</a>`) : '업로드 파일'} · ${fmtTime(job.source.durationSec)} · ${job.minutesCharged}분 차감 · 장르: ${job.genre || '-'} · 재생성 ${job.regenerations}회 ${raw(exactBadge(job.transcriptExact))}${job.transcriptEngine ? raw(` <span class="badge badge-soft">STT ${esc(job.transcriptEngine)}</span>`) : ''}</div></div>
@@ -119,15 +133,6 @@ export const studioJob = auth(async ({ view, params, state, navigate }) => {
       <div class="grid grid-3" style="margin-top:16px">${raw((job.clips || []).map((c) => clipCard(c, templates)).join(''))}</div>`;
     qs('#j-regen').onclick = async () => { if (!(await confirmDialog(`재생성하면 이용권 ${(job.minutesCharged / 2).toFixed(1)}분이 차감됩니다. 진행할까요?`))) return; try { job = await post(`/api/shorts/jobs/${job.id}/regenerate`); job.clips = []; await window.AlphaManApp.refreshUser(); draw(); poll(); } catch (err) { toast(err.message, 'error'); } };
     qs('#j-del').onclick = async () => { if (!(await confirmDialog('작업과 클립을 삭제할까요?'))) return; await del(`/api/shorts/jobs/${job.id}`); navigate('/studio'); };
-    on(view, 'click', '[data-edit]', (e, t) => editClipModal(job.clips.find((c) => c.id === t.dataset.edit), templates, ratios, async () => { job = await get(`/api/shorts/jobs/${job.id}`); draw(); }));
-    on(view, 'click', '[data-publish]', (e, t) => navigate(`/publish?clip=${t.dataset.publish}`));
-    on(view, 'click', '[data-preview]', (e, t) => openPreview({ kind: 'shorts', refId: t.dataset.preview }));
-    bindSeoButtons(view);
-    on(view, 'click', '[data-export]', async (e, t) => {
-      const fmt = t.dataset.format;
-      if (fmt === 'mp4') { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=mp4`), { headers: { Authorization: `Bearer ${getToken()}` } }); if ((r.headers.get('content-type') || '').includes('json')) { await r.json().catch(() => ({})); openRenderDialog({ kind: 'shorts', refId: t.dataset.export, title: job.clips?.find((c) => c.id === t.dataset.export)?.title || '' }); } else { const b = await r.blob(); saveBlob(b, `${t.dataset.export}.mp4`); } }
-      else { const r = await fetch(downloadUrl(`/api/shorts/clips/${t.dataset.export}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } }); saveBlob(await r.blob(), `${t.dataset.export}.${fmt}`); }
-    });
   };
   const poll = () => { clearInterval(timer); timer = setInterval(async () => { try { job = await get(`/api/shorts/jobs/${job.id}`); draw(); if (job.status === 'done' || job.status === 'failed') { clearInterval(timer); window.AlphaManApp.refreshUser(); } } catch { clearInterval(timer); } }, 1200); };
   draw(); if (job.status !== 'done' && job.status !== 'failed') poll();
@@ -182,6 +187,11 @@ export const longform = auth(async ({ view, params, state, navigate, query }) =>
   on(view, 'click', '[data-preview-longform]', (e, t) => openPreview({ kind: 'longform', refId: t.dataset.previewLongform }));
   bindSeoButtons(view); bindRenderButtons(view, () => cur?.source?.title || '');
   on(view, 'click', '[data-del]', async (e, t) => { if (await confirmDialog('작업을 삭제할까요?')) { await del(`/api/longform/jobs/${t.dataset.del}`); navigate(`/longform?r=${Date.now()}`); } });
+  // 처리 중인 작업은 진행률을 폴링해 갱신한다 (완료되면 결과 화면으로 다시 그림)
+  if (cur && !['done', 'failed', 'cancelled'].includes(cur.status)) {
+    const lt = setInterval(async () => { try { const j = await get(`/api/longform/jobs/${cur.id}`); if (j.status !== cur.status || j.progress !== cur.progress) { clearInterval(lt); if (location.hash.includes(cur.id)) navigate(`/longform/${cur.id}?r=${Date.now()}`); } } catch { clearInterval(lt); } }, 1500);
+    window.addEventListener('hashchange', () => clearInterval(lt), { once: true });
+  }
   qs('#l-go').onclick = async (e) => {
     if (tc.state.busy) return toast('원본 대본 추출이 끝날 때까지 잠시 기다려주세요.', 'info');
     const options = { removeSilence: qs('#l-silence').checked, autoSubtitles: qs('#l-subs').checked, chapters: qs('#l-chapters').checked, jumpCuts: qs('#l-jump').checked, silenceThreshold: Number(qs('#l-th').value) };
@@ -192,12 +202,11 @@ export const longform = auth(async ({ view, params, state, navigate, query }) =>
       if (f) { await readVideoMeta(f); const up = await uploadFile(f); body = { uploadId: up.id, options, ...tc.payload() }; }
       else if (presetUpload && !body.url.trim()) body = { uploadId: presetUpload.id, options, ...tc.payload() };
       const j = await post('/api/longform/jobs', body); await window.AlphaManApp.refreshUser(); navigate(`/longform/${j.id}`);
-      setTimeout(() => { if (location.hash.includes(j.id)) navigate(`/longform/${j.id}?r=${Date.now()}`); }, 2500);
     } catch (err) { toast(err.message, 'error', 6000); e.target.disabled = false; }
   };
 });
 function renderLongform(j) {
-  if (j.status !== 'done') return `<div class="card" style="margin-top:16px"><b>${esc(j.source.title)}</b> ${statusBadge(j.status)} <div class="progress" style="margin-top:8px"><div style="width:${j.progress}%"></div></div><p class="tiny muted">잠시 후 새로고침됩니다.</p></div>`;
+  if (j.status !== 'done') return `<div class="card" style="margin-top:16px"><b>${esc(j.source.title)}</b> ${statusBadge(j.status)} <div class="progress" style="margin-top:8px"><div style="width:${j.progress}%"></div></div>${j.error ? `<p class="badge badge-danger">${esc(j.error)}</p>` : '<p class="tiny muted">처리 중입니다. 진행률이 자동으로 갱신됩니다.</p>'}</div>`;
   const r = j.result; const D = r.originalDurationSec;
   return `<div class="card" style="margin-top:16px"><div class="row row-between"><h3>${esc(j.source.title)}</h3><div class="row" style="flex-wrap:wrap"><button class="btn btn-primary btn-sm" data-preview-longform="${j.id}">▶ 미리보기</button>${renderButton('longform', j.id)}${seoButtons('longform', j.id)}<a class="btn btn-sm" href="#/library?kind=longform">📁 보관함</a></div></div>${r.seo ? `<div class="small" style="margin:6px 0"><b>🏆 추천 제목:</b> ${esc(r.seo.bestTitle)}</div>` : ''}<div class="chips"><span class="chip">원본 ${fmtTime(D)}</span><span class="chip">편집본 ${fmtTime(r.editedDurationSec)}</span><span class="chip">공백 제거 ${r.removedSec}초 (${r.cuts.length}곳)</span><span class="chip">자막 ${r.subtitles.length}줄</span><span class="chip">STT: ${esc(r.transcriptEngine)}</span>${exactBadge(r.transcriptExact)}</div>
     <div class="timeline" style="margin:12px 0">${r.timeline.map((k) => `<div class="seg" style="left:${(k.start / D) * 100}%;width:${((k.end - k.start) / D) * 100}%"></div>`).join('')}${r.cuts.map((c) => `<div class="cut" style="left:${(c.start / D) * 100}%;width:${Math.max(0.3, ((c.end - c.start) / D) * 100)}%"></div>`).join('')}</div>
@@ -278,7 +287,7 @@ export const subtitleEditor = auth(async ({ view, params, state, navigate, query
     qs('#ed-save').onclick = save;
     qs('#ed-split').onclick = async () => { const id = [...selected][0]; if (!id) return toast('분할할 자막을 선택하세요.'); try { await autosave.flush(); p = await post(`/api/subtitles/projects/${p.id}/split`, { segmentId: id, at: playhead }); selected.clear(); draw(); } catch (err) { toast(err.message, 'error'); } };
     qs('#ed-merge').onclick = async () => { if (selected.size < 2) return toast('두 개 이상 선택하세요.'); try { await autosave.flush(); p = await post(`/api/subtitles/projects/${p.id}/merge`, { segmentIds: [...selected] }); selected.clear(); draw(); } catch (err) { toast(err.message, 'error'); } };
-    qs('#ed-resplit').onclick = async () => { const maxChars = Number(prompt('한 줄 최대 글자 수', '22') || 22); await autosave.flush(); p = await post(`/api/subtitles/projects/${p.id}/resplit`, { maxChars }); draw(); };
+    qs('#ed-resplit').onclick = async () => { const v = await promptDialog('한 줄 최대 글자 수', '22', { title: '의미 기반 재분할' }); if (v == null) return; const maxChars = Number(v) || 22; await autosave.flush(); p = await post(`/api/subtitles/projects/${p.id}/resplit`, { maxChars }); draw(); };
     qs('#ed-undo').onclick = undo; qs('#ed-redo').onclick = redo;
     qs('#ed-history').onclick = async () => { const h = await get(`/api/subtitles/projects/${p.id}/history`); modal(`<p class="small muted">되돌리기 ${h.undo}단계 · 다시 실행 ${h.redo}단계 (최대 ${h.max}단계 보관)</p>${h.recent.length ? `<table class="table">${h.recent.map((r, i) => `<tr><td>${i + 1}단계 전</td><td>${fmtDate(r.at)}</td><td>${r.segments}줄</td></tr>`).join('')}</table>` : '<p class="muted">변경 기록이 없습니다.</p>'}<div class="row" style="margin-top:8px"><button class="btn" id="h-undo" ${h.undo ? '' : 'disabled'}>↶ 되돌리기</button><button class="btn" id="h-redo" ${h.redo ? '' : 'disabled'}>↷ 다시 실행</button></div>`, { title: '변경 기록' }); const hu = qs('#h-undo'); const hr = qs('#h-redo'); if (hu) hu.onclick = undo; if (hr) hr.onclick = redo; };
     qs('#ed-add').onclick = () => { const last = p.segments[p.segments.length - 1]; p.segments.push({ id: `seg-${Date.now()}`, start: last ? last.end + 0.2 : 0, end: last ? last.end + 2 : 2, text: '새 자막', words: [] }); draw(); markDirty(); };
@@ -399,7 +408,10 @@ export const publish = auth(async ({ view, query, navigate }) => {
   on(view, 'click', '[data-cancel]', async (e, t) => { await del(`/api/publish/queue/${t.dataset.cancel}`); navigate(`/publish?r=${Date.now()}`); });
   qs('#pb-go').onclick = async () => {
     const when = qs('#pb-when').value;
-    const schedule = when === 'at' ? { at: new Date(qs('#pb-at-input').value).toISOString() } : when === 'recurring' ? { recurring: { days: qsa('[data-day]:checked').map((d) => d.value), time: qs('#pb-time').value } } : null;
+    const atVal = qs('#pb-at-input').value;
+    if (when === 'at' && (!atVal || Number.isNaN(new Date(atVal).getTime()))) return toast('예약 시간을 선택해주세요.', 'error');
+    if (when === 'recurring' && !qsa('[data-day]:checked').length) return toast('반복할 요일을 하나 이상 선택해주세요.', 'error');
+    const schedule = when === 'at' ? { at: new Date(atVal).toISOString() } : when === 'recurring' ? { recurring: { days: qsa('[data-day]:checked').map((d) => d.value), time: qs('#pb-time').value } } : null;
     try { const items = await post('/api/publish/schedule', { clipId: qs('#pb-clip').value, accountIds: qsa('[data-acc]:checked').map((a) => a.value), title: qs('#pb-title').value, description: qs('#pb-desc').value, hashtags: (qs('#pb-desc').value.match(/#\S+/g) || []), schedule }); toast(`${items.length}건 ${when === 'now' ? '업로드' : '예약'} 완료`); navigate(`/publish?r=${Date.now()}`); } catch (err) { toast(err.message, 'error', 5000); }
   };
 });
@@ -448,8 +460,8 @@ export const account = auth(async ({ view, state, navigate }) => {
 });
 
 export const credits = auth(async ({ view }) => {
-  const { balance, ledger } = await get('/api/credits');
-  view.innerHTML = html`<h1>이용권</h1><div class="card"><div style="font-size:1.8rem;font-weight:900">${balance}분</div><a class="btn btn-primary btn-sm" href="#/pricing">충전하기</a></div><div class="card table-wrap" style="margin-top:12px"><table class="table"><tr><th>일시</th><th>내용</th><th>변동</th></tr>${raw(ledger.map((l) => `<tr><td>${fmtDate(l.createdAt)}</td><td>${esc(l.reason)}</td><td class="${l.delta > 0 ? 'badge-success' : ''}" style="font-weight:700;color:${l.delta > 0 ? 'var(--success)' : 'var(--danger)'}">${l.delta > 0 ? '+' : ''}${l.delta}분</td></tr>`).join(''))}</table></div>`;
+  const { balance, ledger, creditsUnlimited } = await get('/api/credits');
+  view.innerHTML = html`<h1>이용권</h1><div class="card"><div style="font-size:1.8rem;font-weight:900">${creditsUnlimited || balance == null ? '무제한 (관리자)' : `${balance}분`}</div><a class="btn btn-primary btn-sm" href="#/pricing">충전하기</a></div><div class="card table-wrap" style="margin-top:12px"><table class="table"><tr><th>일시</th><th>내용</th><th>변동</th></tr>${raw(ledger.map((l) => `<tr><td>${fmtDate(l.createdAt)}</td><td>${esc(l.reason)}</td><td class="${l.delta > 0 ? 'badge-success' : ''}" style="font-weight:700;color:${l.delta > 0 ? 'var(--success)' : 'var(--danger)'}">${l.delta > 0 ? '+' : ''}${l.delta}분</td></tr>`).join(''))}</table></div>`;
 });
 
 export async function support({ view, state, params, navigate }) {

@@ -2,6 +2,8 @@
 const BASE = (window.alphaman && window.alphaman.apiBase) || '';
 let token = null;
 try { token = localStorage.getItem('am_token'); } catch { /* ignore */ }
+// 프로그램(Electron) 버전은 내장 서버 포트가 바뀌면 localStorage 오리진이 달라져 토큰이 비어 있을 수 있다 → 쿠키에서 복구
+if (!token) { try { const m = document.cookie.match(/(?:^|;\s*)am_token=([^;]+)/); if (m) token = decodeURIComponent(m[1]); } catch { /* ignore */ } }
 
 export function getToken() { return token; }
 // 토큰은 localStorage 와 쿠키 양쪽에 둔다: <img>/<video>/<audio> 태그가 인증이 필요한 스트림(썸네일·미리보기·목소리 샘플)을 바로 불러올 수 있도록
@@ -44,7 +46,7 @@ export async function uploadFile(file, onProgress) {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${BASE}/api/upload`);
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream'); // 브라우저가 형식을 모르는 파일(.srt 등)은 확장자로 판단하게 둔다
     xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
     xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
     xhr.onload = () => { try { const d = JSON.parse(xhr.responseText); xhr.status < 400 ? resolve(d) : reject(new Error(d.error || '업로드 실패')); } catch { reject(new Error('업로드 실패')); } };

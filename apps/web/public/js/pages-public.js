@@ -87,9 +87,23 @@ function resetFlow(email = '') {
   m.el.querySelector('#rs-go').onclick = async (ev) => { ev.target.disabled = true; try { const r = await post('/api/auth/reset-request', { email: m.el.querySelector('#rs-email').value.trim().toLowerCase() }); m.el.querySelector('#rs-out').innerHTML = `✅ ${esc(r.message || '요청이 접수되었습니다.')}`; } catch (err) { m.el.querySelector('#rs-out').innerHTML = `❌ ${esc(err.message)}`; ev.target.disabled = false; } };
 }
 
-function googleFlow(navigate, next) {
-  const m = modal(html`<p class="small muted">Google 로그인은 Google 계정 이메일로 계정을 만들거나 연결합니다. (OAuth 클라이언트 ID 를 설정하면 실제 Google 팝업이 사용됩니다)</p><div class="field"><label>Google 이메일</label><input id="g-email" type="email" placeholder="you@gmail.com" /></div><div class="field"><label>이름</label><input id="g-name" placeholder="표시 이름" /></div><button class="btn btn-primary btn-block" id="g-go">계속</button>`, { title: 'Google 계정으로 로그인' });
-  m.el.querySelector('#g-go').onclick = async () => { try { const r = await post('/api/auth/google', { email: m.el.querySelector('#g-email').value, name: m.el.querySelector('#g-name').value }); setToken(r.token); await window.AlphaManApp.refreshUser(); m.close(); navigate(next || '/dashboard'); } catch (err) { toast(err.message, 'error'); } };
+// Google 간편 로그인: Google Identity Services 버튼 → ID 토큰(credential) → 서버가 Google 에 검증한 뒤 세션 발급
+let gisLoading = null;
+function loadGis() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  if (gisLoading) return gisLoading;
+  gisLoading = new Promise((resolve, reject) => { const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.onload = () => resolve(); s.onerror = () => reject(new Error('Google 로그인 스크립트를 불러오지 못했습니다 (네트워크 확인).')); document.head.appendChild(s); });
+  return gisLoading;
+}
+async function googleFlow(navigate, next) {
+  const clientId = window.AlphaManApp?.state?.info?.googleClientId;
+  if (!clientId) return modal('<p>Google 로그인이 아직 설정되지 않았습니다. 이메일/비밀번호로 로그인해주세요.</p><p class="tiny muted">관리자: Google Cloud 콘솔에서 OAuth 클라이언트 ID(웹)를 만들고 서버 환경변수 <code>GOOGLE_CLIENT_ID</code> 에 넣으면 버튼이 켜집니다.</p>', { title: 'Google 계정으로 로그인' });
+  const m = modal('<p class="small muted">Google 계정을 선택하면 Google 이 발급한 로그인 정보를 서버가 검증한 뒤 계정을 만들거나 연결합니다.</p><div id="g-btn" style="display:flex;justify-content:center;min-height:44px"></div><div id="g-out" class="small" style="margin-top:8px"></div>', { title: 'Google 계정으로 로그인' });
+  try {
+    await loadGis();
+    window.google.accounts.id.initialize({ client_id: clientId, callback: async (resp) => { try { const r = await post('/api/auth/google', { credential: resp.credential }); setToken(r.token); await window.AlphaManApp.refreshUser(); m.close(); toast(`환영합니다, ${r.user.name}님`); navigate(next || (r.user.isAdmin ? '/admin' : '/dashboard')); } catch (err) { m.el.querySelector('#g-out').textContent = `❌ ${err.message}`; toast(err.message, 'error', 6000); } }, ux_mode: 'popup', auto_select: false });
+    window.google.accounts.id.renderButton(m.el.querySelector('#g-btn'), { theme: 'outline', size: 'large', width: 320, text: 'continue_with', locale: 'ko' });
+  } catch (err) { m.el.querySelector('#g-out').textContent = `❌ ${err.message}`; }
 }
 
 export async function signup({ view, navigate, query }) {

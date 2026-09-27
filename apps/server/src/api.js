@@ -88,7 +88,11 @@ export function buildApi(app) {
   r.patch('/api/shorts/clips/:id', async (ctx) => app.shorts.editClip(auth(ctx).id, ctx.params.id, ctx.body));
   r.post('/api/shorts/clips/:id/render', async (ctx) => app.shorts.rerender(auth(ctx).id, ctx.params.id));
   r.get('/api/shorts/clips/:id/export', async (ctx) => {
-    const out = app.shorts.exportClip(auth(ctx).id, ctx.params.id, ctx.query.format || 'mp4');
+    // 공유 링크(share 토큰)로는 그 클립의 렌더 파일 재생만 (내려받기는 링크 설정이 허용할 때)
+    const owner = ctx.query.share ? app.share.ownerForToken(ctx.query.share, { kind: 'shorts', refId: ctx.params.id, download: ctx.query.inline !== '1' }) : auth(ctx).id;
+    if (!owner) throw new ApiError(404, '클립을 찾을 수 없습니다.');
+    if (ctx.query.share && (ctx.query.format || 'mp4') !== 'mp4') throw new ApiError(403, '공유 링크로는 영상만 볼 수 있습니다.');
+    const out = app.shorts.exportClip(owner, ctx.params.id, ctx.query.format || 'mp4');
     if (out.file && fs.existsSync(out.file)) return { _file: out.file, mime: out.mime, filename: `${ctx.params.id}.mp4`, inline: ctx.query.inline === '1' };
     if (out.body != null) return { _raw: out.body, mime: out.mime, filename: `${ctx.params.id}.${out.ext}` };
     return { rendered: false, plan: out.plan, clip: out.clip, message: 'ffmpeg 이 설치된 환경(프로그램 버전)에서 실제 MP4 가 렌더링됩니다.' };
@@ -114,9 +118,12 @@ export function buildApi(app) {
   r.delete('/api/remix/jobs/:id', async (ctx) => ({ ok: app.remix.remove(auth(ctx).id, ctx.params.id) }));
   r.post('/api/remix/jobs/:id/regenerate', async (ctx) => app.remix.regenerate(auth(ctx).id, ctx.params.id));
   r.get('/api/remix/jobs/:id/export', async (ctx) => {
-    const j = app.remix.get(auth(ctx).id, ctx.params.id);
-    if (j.status !== 'done') throw new ApiError(409, '아직 완료되지 않은 작업입니다.');
     const fmt = ctx.query.format || 'mp4';
+    const owner = ctx.query.share ? app.share.ownerForToken(ctx.query.share, { kind: 'remix', refId: ctx.params.id, download: ctx.query.inline !== '1' }) : auth(ctx).id;
+    if (!owner) throw new ApiError(404, '재구성 작업을 찾을 수 없습니다.');
+    if (ctx.query.share && fmt !== 'mp4') throw new ApiError(403, '공유 링크로는 영상만 볼 수 있습니다.');
+    const j = app.remix.get(owner, ctx.params.id);
+    if (j.status !== 'done') throw new ApiError(409, '아직 완료되지 않은 작업입니다.');
     if (fmt === 'ass') return { _raw: j.result.render.subtitleASS || '', mime: 'text/x-ssa', filename: `${j.id}.ass` };
     if (fmt === 'json') return { _raw: JSON.stringify(j.result, null, 2), mime: 'application/json', filename: `${j.id}.json` };
     if (j.result.render?.rendered && fs.existsSync(j.result.render.output)) return { _file: j.result.render.output, mime: 'video/mp4', filename: `${j.id}.mp4`, inline: ctx.query.inline === '1' };
@@ -130,7 +137,7 @@ export function buildApi(app) {
   r.patch('/api/library/:id', async (ctx) => app.library.update(auth(ctx).id, ctx.params.id, ctx.body));
   r.delete('/api/library/:id', async (ctx) => ({ ok: app.library.remove(auth(ctx).id, ctx.params.id, { deleteFile: ctx.query.deleteFile === '1' }) }));
   r.get('/api/library/:id/video', async (ctx) => {
-    const owner = ctx.query.share ? app.share.ownerForToken(ctx.query.share) : auth(ctx).id;
+    const owner = ctx.query.share ? app.share.ownerForToken(ctx.query.share, { libraryId: ctx.params.id, download: ctx.query.download === '1' }) : auth(ctx).id;
     if (!owner) throw new ApiError(404, '보관함 항목을 찾을 수 없습니다.');
     const file = app.library.videoFile(owner, ctx.params.id);
     if (!file) throw new ApiError(404, '아직 렌더된 영상 파일이 없습니다. 미리보기는 원본 영상을 타임라인대로 이어서 재생합니다.');
@@ -206,7 +213,7 @@ export function buildApi(app) {
     if (body.localPath && app.platform !== 'desktop') delete body.localPath;
     return app.voice.createProfile(user.id, body);
   });
-  r.patch('/api/voice/profiles/:id', async (ctx) => app.voice.rename(auth(ctx).id, ctx.params.id, ctx.body.name));
+  r.patch('/api/voice/profiles/:id', async (ctx) => app.voice.update(auth(ctx).id, ctx.params.id, ctx.body || {}));
   r.delete('/api/voice/profiles/:id', async (ctx) => ({ ok: app.voice.remove(auth(ctx).id, ctx.params.id) }));
   r.post('/api/voice/synthesize', async (ctx) => { const u = auth(ctx); const started = new Date().toISOString(); try { const r = await app.voice.synthesize(u.id, ctx.body); app.activity.log(u.id, { kind: 'tts', refId: r.id, title: String(ctx.body.text || '').slice(0, 60), input: { ...ctx.body }, result: { engine: r.engine, audio: Boolean(r.audioPath) }, startedAt: started }); return r; } catch (err) { app.activity.log(u.id, { kind: 'tts', title: String(ctx.body.text || '').slice(0, 60), input: { ...ctx.body }, error: err, startedAt: started }); throw err; } });
   r.get('/api/voice/renders', async (ctx) => app.voice.renders(auth(ctx).id));

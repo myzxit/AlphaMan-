@@ -379,3 +379,126 @@ test('브라우저 렌더 결과 저장: 조각 업로드 → 합쳐서 보관�
   assert.ok(!/href="\/api\//.test(svg), '외부 URL 참조가 남지 않는다');
   a.close();
 });
+
+test('멈춘 작업 복구: 다른 인스턴스에서 처리 중인 채 오래된 쇼츠/재구성/롱폼 작업은 조회 시 다시 돌아가고, 큐가 빌 때까지 idle() 로 기다릴 수 있다', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'stale@test.com', password: 'secret1', name: 'S' });
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, clipCount: 1 }, transcriptText: SRT });
+  assert.ok(a.activity.queue.busy);
+  assert.equal(await a.activity.queue.idle(8000), true);
+  assert.equal(a.shorts.getJob(user.id, job.id).status, 'done');
+  const oldClips = a.shorts.getJob(user.id, job.id).clipIds;
+  // 다른 인스턴스가 동결된 상황 재현: 처리 중 + 오래된 updatedAt + 이 인스턴스 큐에는 없음
+  a.store.update('jobs', job.id, { status: 'processing', step: 'editing' });
+  a.store.get('jobs', job.id).updatedAt = new Date(Date.now() - 120_000).toISOString();
+  const seen = a.shorts.getJob(user.id, job.id);
+  assert.equal(seen.recoveries, 1);
+  assert.ok(seen.log.some((l) => l.step === 'recover'));
+  await a.activity.queue.idle(8000);
+  const done = a.shorts.getJob(user.id, job.id);
+  assert.equal(done.status, 'done');
+  assert.equal(done.clips.length, 1);
+  assert.ok(!oldClips.includes(done.clipIds[0]), '이전 클립은 정리되고 새 클립이 만들어진다');
+  // 최근에 갱신된 작업(다른 인스턴스가 정상 진행 중)은 건드리지 않는다
+  a.store.update('jobs', job.id, { status: 'processing' });
+  assert.equal(a.shorts.getJob(user.id, job.id).recoveries, 1);
+  a.store.update('jobs', job.id, { status: 'done' });
+  // 두 번 복구해도 안 끝나면 실패 + 환불
+  const lf = await a.longform.create(user.id, { url: 'https://youtu.be/abcdefghijk', transcriptText: SRT });
+  await a.activity.queue.idle(8000);
+  const before = a.credits.balance(user.id);
+  a.store.update('longformJobs', lf.id, { status: 'processing', recoveries: 2 });
+  a.store.get('longformJobs', lf.id).updatedAt = new Date(Date.now() - 120_000).toISOString();
+  const failed = a.longform.get(user.id, lf.id);
+  assert.equal(failed.status, 'failed');
+  assert.ok(/재시작/.test(failed.error));
+  assert.ok(a.credits.balance(user.id) > before || a.credits.balance(user.id) === Infinity);
+});
+
+test('리믹스 더빙·자막 영역·내 목소리 대체: dub 은 자막을 문장 묶음으로 읽어 원본 목소리를 대체하고, 자막 영역은 위치별 크롭/블러, 클론 엔진이 없는 프로필은 대체 무료 목소리로 읽는다', async () => {
+  const { dubLines, subtitleRegionFor } = await import('../src/remix.js');
+  assert.deepEqual(subtitleRegionFor('center'), { x: 0, y: 0.4, w: 1, h: 0.22, detect: false });
+  assert.equal(subtitleRegionFor('auto').detect, true);
+  assert.equal(dubLines([{ start: 0, end: 2, text: '안녕' }, { start: 2.5, end: 4, text: '하세요' }, { start: 9, end: 11, text: '다음' }, { start: 11, end: 12, text: '카드', card: true }]).length, 2);
+  const a = app();
+  const { user } = a.auth.signup({ email: 'dub@test.com', password: 'secret1', name: 'D' });
+  const job = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, transcriptText: SRT, options: { targetMinutes: 1, estimatedDurationSec: 60, narration: 'dub', voiceId: 'ko-sunhi', keepOriginalVoice: true, subtitleRegion: 'center' } });
+  assert.equal(job.options.keepOriginalVoice, false, '더빙은 원본 목소리를 항상 대체');
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', job.id); return j.status === 'done' ? j : null; }, 8000);
+  const n = done.result.narration;
+  assert.equal(n.mode, 'dub'); assert.equal(n.replacesOriginalVoice, true); assert.equal(n.exclusive, true); assert.equal(n.duckLevel, 0);
+  assert.ok(n.lines.length >= 1 && n.lines.every((l) => l.renderId && l.text));
+  const step = done.result.cleaning.steps.find((s) => s.id === 'burned-subtitles');
+  assert.equal(step.region.y, 0.4); assert.equal(step.method, 'browser');
+  assert.ok(/subtitles=/.test(done.result.render.plan.args.join(' ')) && /boxblur/.test(done.result.render.plan.args.join(' ')), '중앙 띠는 ffmpeg 계획에서 블러');
+  const spec = a.library.previewSpec(user.id, 'remix', job.id);
+  assert.equal(spec.audio.muteOriginal, true); assert.equal(spec.audio.exclusiveCues, true); assert.equal(spec.audio.mode, 'dub'); assert.equal(spec.cropBottom, 0); assert.equal(spec.burnedRegion.y, 0.4);
+  assert.ok(done.narrationCache && Object.keys(done.narrationCache).length >= 1 || n.lines.length <= 3, '문장 캐시');
+  // 내 목소리 프로필(클론 엔진 없음) → 대체 무료 목소리
+  const os = await import('node:os'); const fsm = await import('node:fs'); const pathm = await import('node:path');
+  const wav = pathm.join(os.tmpdir(), `alphaman-dub-${Date.now()}.wav`);
+  const sr = 16000; const secs = 12; const pcm = Buffer.alloc(44 + sr * secs * 2); pcm.write('RIFF', 0); pcm.writeUInt32LE(36 + sr * secs * 2, 4); pcm.write('WAVEfmt ', 8); pcm.writeUInt32LE(16, 16); pcm.writeUInt16LE(1, 20); pcm.writeUInt16LE(1, 22); pcm.writeUInt32LE(sr, 24); pcm.writeUInt32LE(sr * 2, 28); pcm.writeUInt16LE(2, 32); pcm.writeUInt16LE(16, 34); pcm.write('data', 36); pcm.writeUInt32LE(sr * secs * 2, 40);
+  fsm.writeFileSync(wav, pcm);
+  const up = a.registerUpload(user.id, { filename: 'me.wav', mimeType: 'audio/wav', size: pcm.length, path: wav });
+  const profile = await a.voice.createProfile(user.id, { uploadId: up.id, name: '나', consent: true, language: 'ko' });
+  assert.equal(profile.engine, 'simulated');
+  a.voice.update(user.id, profile.id, { fallbackVoiceId: 'ko-injoon' });
+  assert.throws(() => a.voice.update(user.id, profile.id, { fallbackVoiceId: 'nope' }), /알 수 없는 목소리/);
+  const r = await a.voice.synthesize(user.id, { profileId: profile.id, text: '대체 목소리 테스트' });
+  assert.equal(r.profileId, profile.id); assert.equal(r.voiceFallback, 'ko-injoon'); assert.ok(/대체/.test(r.plan.note));
+  fsm.unlinkSync(wav);
+});
+
+test('보안·결제·이용권 회귀: Google 로그인은 credential 검증 없이는 불가, 세션 키는 저장소에 생성, 결제 이행 멱등, 재생성 실패 환불은 실제 차감분만, 402 는 고아 작업을 남기지 않음, 잔액은 원장 합, 병합 시 중복 사용자의 userId 재매핑, 공유 토큰 범위', async () => {
+  const { mergeSnapshots } = await import('../src/store.js');
+  const a = app();
+  await assert.rejects(() => a.auth.loginWithGoogle({ email: 'hhudeu66@gmail.com' }), /GOOGLE_CLIENT_ID|credential/);
+  process.env.GOOGLE_CLIENT_ID = 'x.apps.googleusercontent.com';
+  try { await assert.rejects(() => a.auth.loginWithGoogle({ email: 'hhudeu66@gmail.com' }), /credential/); } finally { delete process.env.GOOGLE_CLIENT_ID; }
+  assert.equal(a.auth.ensureSecret(), 'store');
+  assert.ok(a.store.get('settings', 'session-secret')?.value?.length >= 64);
+  const { user, token } = a.auth.signup({ email: 'pay@test.com', password: 'secret1', name: 'P' });
+  assert.ok(a.auth.userFromToken(token));
+  // 결제 이행 멱등성
+  const order = a.payments.createOrder(user.id, { planId: 'starter' });
+  const before = a.credits.balance(user.id);
+  const p1 = a.payments._fulfill(order, { paymentKey: 'pk1', method: 'card', approvedAt: new Date().toISOString(), raw: {} });
+  const p2 = a.payments._fulfill(order, { paymentKey: 'pk1', method: 'card', approvedAt: new Date().toISOString(), raw: {} });
+  assert.equal(p1.id, p2.id);
+  assert.equal(a.credits.balance(user.id), before + 120);
+  await a.payments.tossWebhook({ data: { orderId: order.id, status: 'CANCELED' } });
+  assert.equal(a.store.get('orders', order.id).status, 'paid', '결제 완료 주문은 서명 없는 취소 웹훅으로 되돌아가지 않는다');
+  // 402 → 고아 작업 없음
+  const poor = a.auth.signup({ email: 'poor@test.com', password: 'secret1', name: 'Q' }).user;
+  await assert.rejects(() => a.shorts.createFromYoutube(poor.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 60 * 60 * 5 }, transcriptText: SRT }), /이용권이 부족/);
+  assert.equal(a.shorts.listJobs(poor.id).length, 0);
+  // 재생성 실패 환불은 50% 만
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, clipCount: 1 }, transcriptText: SRT });
+  await a.activity.queue.idle(8000);
+  const b0 = a.credits.balance(user.id);
+  await a.shorts.regenerate(user.id, job.id);
+  assert.equal(a.credits.balance(user.id), b0 - 1);
+  a.shorts._fail(job.id, new Error('boom'));
+  assert.equal(a.credits.balance(user.id), b0, '환불은 재생성 때 차감한 1분(50%)만');
+  // 잔액은 원장 합 (잔액 레코드가 덮어써져도 유지)
+  const rec = a.store.findOne('credits', (c) => c.userId === user.id); a.store.update('credits', rec.id, { minutes: 9999 });
+  assert.equal(a.credits.balance(user.id), b0);
+  // 병합 시 중복 사용자 재매핑
+  const older = { id: 'u-old', email: 'dup@test.com', passwordHash: 'a:b', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
+  const newer = { id: 'u-new', email: 'dup@test.com', passwordHash: 'c:d', createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' };
+  const merged = mergeSnapshots({ users: [older], creditLedger: [{ id: 'l1', userId: 'u-old', delta: 30, updatedAt: '2026-01-01T00:00:00.000Z' }] }, { users: [newer], creditLedger: [{ id: 'l2', userId: 'u-new', delta: 30, updatedAt: '2026-01-02T00:00:00.000Z' }], jobs: [{ id: 'j1', userId: 'u-new', updatedAt: '2026-01-02T00:00:00.000Z' }] });
+  assert.equal(merged.users.length, 1); assert.ok(merged.creditLedger.every((l) => l.userId === 'u-old')); assert.equal(merged.jobs[0].userId, 'u-old');
+  // 공유 토큰 범위: 공유한 항목의 파일만, 다운로드는 허용 시에만
+  const job2 = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, clipCount: 1 }, transcriptText: SRT });
+  await a.activity.queue.idle(8000);
+  const clip = a.shorts.getJob(user.id, job2.id).clips[0];
+  const share = a.share.create(user.id, { kind: 'shorts', refId: clip.id, allowDownload: false });
+  const resolved = a.share.resolve(share.token);
+  assert.ok(!resolved.preview.renderUrl || /[?&]share=/.test(resolved.preview.renderUrl));
+  assert.equal(a.share.ownerForToken(share.token, { kind: 'shorts', refId: clip.id }), user.id);
+  assert.equal(a.share.ownerForToken(share.token, { kind: 'shorts', refId: 'other' }), null);
+  assert.equal(a.share.ownerForToken(share.token, { kind: 'shorts', refId: clip.id, download: true }), null);
+  assert.equal(a.share.ownerForToken(share.token, { renderId: 'nope' }), null);
+  assert.throws(() => a.subtitles.mergeSegments(user.id, 'x', undefined), /찾을 수 없|segmentIds/);
+  await assert.rejects(() => a.translate.translateText('hi', 'xx'), (e) => e.status === 400);
+});

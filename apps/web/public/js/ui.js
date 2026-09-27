@@ -12,14 +12,20 @@ export function toast(msg, type = 'info', ms = 3000) {
   setTimeout(() => el.remove(), ms);
 }
 
+// 모달은 겹쳐 열 수 있다(스택): 안쪽 모달을 닫아도 바깥 모달(썸네일 편집기·버전 기록 등)은 그대로 남는다
 export function modal(content, { title = '', onClose = null, wide = false } = {}) {
   const root = document.getElementById('modal-root');
-  root.innerHTML = `<div class="modal"><div class="modal-box" ${wide ? 'style="max-width:820px"' : ''}><div class="row row-between" style="margin-bottom:12px"><h3>${esc(title)}</h3><button class="icon-btn" data-modal-close aria-label="닫기">✕</button></div><div class="modal-content"></div></div></div>`;
-  root.querySelector('.modal-content').append(typeof content === 'string' ? Object.assign(document.createElement('div'), { innerHTML: content }) : content);
-  const close = () => { root.innerHTML = ''; onClose && onClose(); };
-  root.querySelector('[data-modal-close]').onclick = close;
-  root.querySelector('.modal').addEventListener('click', (e) => { if (e.target.classList.contains('modal')) close(); });
-  return { close, el: root.querySelector('.modal-content') };
+  const layer = document.createElement('div'); layer.className = 'modal'; layer.style.zIndex = String(70 + root.children.length);
+  layer.innerHTML = `<div class="modal-box" ${wide ? 'style="max-width:820px"' : ''}><div class="row row-between" style="margin-bottom:12px"><h3>${esc(title)}</h3><button class="icon-btn" data-modal-close aria-label="닫기">✕</button></div><div class="modal-content"></div></div>`;
+  layer.querySelector('.modal-content').append(typeof content === 'string' ? Object.assign(document.createElement('div'), { innerHTML: content }) : content);
+  root.appendChild(layer);
+  let closed = false;
+  const close = () => { if (closed) return; closed = true; layer.remove(); onClose && onClose(); };
+  layer.querySelector('[data-modal-close]').onclick = close;
+  layer.addEventListener('click', (e) => { if (e.target === layer) close(); });
+  const onKey = (e) => { if (e.key === 'Escape' && root.lastElementChild === layer) { close(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+  return { close, el: layer.querySelector('.modal-content'), layer };
 }
 
 export function confirmDialog(message) {
@@ -27,6 +33,18 @@ export function confirmDialog(message) {
     const m = modal(`<p>${esc(message)}</p><div class="row" style="justify-content:flex-end"><button class="btn" data-no>취소</button><button class="btn btn-primary" data-yes>확인</button></div>`, { title: '확인' });
     m.el.querySelector('[data-no]').onclick = () => { m.close(); resolve(false); };
     m.el.querySelector('[data-yes]').onclick = () => { m.close(); resolve(true); };
+  });
+}
+
+// window.prompt 대체 (프로그램(Electron) 버전에서는 prompt() 가 동작하지 않는다). 취소하면 null
+export function promptDialog(message, defaultValue = '', { title = '입력', placeholder = '' } = {}) {
+  return new Promise((resolve) => {
+    const m = modal(`<p>${esc(message)}</p><div class="field"><input id="pd-input" value="${esc(defaultValue)}" placeholder="${esc(placeholder)}" /></div><div class="row" style="justify-content:flex-end"><button class="btn" data-no>취소</button><button class="btn btn-primary" data-yes>확인</button></div>`, { title, onClose: () => resolve(null) });
+    const input = m.el.querySelector('#pd-input'); setTimeout(() => { input.focus(); input.select(); }, 0);
+    const ok = () => { const v = input.value; resolve(v); m.close(); };
+    m.el.querySelector('[data-no]').onclick = () => m.close();
+    m.el.querySelector('[data-yes]').onclick = ok;
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
   });
 }
 

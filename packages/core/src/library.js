@@ -194,10 +194,12 @@ export class LibraryService {
       if (clip.outro) { items.push({ kind: 'card', title: clip.outro.text, cta: true, channel: clip.outro.channel || null, start: 0, end: 0, speed: 1, newStart: round(cursor), newEnd: round(cursor + clip.outro.durationSec) }); cursor += clip.outro.durationSec; }
       const rendered = Boolean(clip.render?.rendered && clip.render.output && fs.existsSync(clip.render.output));
       const lib = rendered ? null : this._libRender(userId, 'shorts', clip.id);
+      // 자막은 클립 기준 시각(원본 = clip.start + t) → 무음 컷을 뺀 새 타임라인 시각으로 변환 (컷마다 자막이 늦어지던 문제)
+      const toNew = (t) => { const src = clip.start + t; for (const it of items) if (src >= it.start && src <= it.end) return round(it.newStart + (src - it.start)); const before = items.filter((it) => it.kind === 'source' && it.end <= src).pop(); return before ? before.newEnd : 0; };
       return {
-        kind: 'shorts', refId: clip.id, title: clip.title, ratio: clip.ratio, durationSec: round(cursor), rendered: rendered || Boolean(lib), burnedSubtitles: Boolean(lib), renderedBy: rendered ? 'ffmpeg' : lib ? 'browser' : null,
+        kind: 'shorts', refId: clip.id, title: clip.title, ratio: clip.ratio, durationSec: round(cursor), rendered: rendered || Boolean(lib), burnedSubtitles: rendered || Boolean(lib), renderedBy: rendered ? 'ffmpeg' : lib ? 'browser' : null,
         renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : lib ? lib.url : null,
-        source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map(sub), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
+        source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map((s) => ({ ...sub(s), start: toNew(s.start), end: toNew(s.end) })).filter((s) => s.end > s.start), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
         zoomKeyframes: clip.zoomKeyframes || [], templateId: clip.templateId, transcriptExact: job.transcriptExact ?? null, thumbnail: clip.thumbnail || job.source.thumbnail || null,
         outro: clip.outro || null, seo: clip.seo || null, cropBottom: clip.cropBottom || 0,
         audio: { muteOriginal: false, duckOriginal: true, cues: clip.audio?.aiHookVoice ? [cue(clip.audio.aiHookVoice, 0, this.store)] : [] },
@@ -210,6 +212,8 @@ export class LibraryService {
       const r = job.result || {};
       const rendered = Boolean(r.render?.rendered && r.render.output && fs.existsSync(r.render.output));
       const lib = rendered ? null : this._libRender(userId, 'remix', job.id);
+      const burnedStep = (r.cleaning?.steps || []).find((st) => st.id === 'burned-subtitles') || null;
+      const burnedRegion = burnedStep ? (burnedStep.region || { x: 0, y: 0.78, w: 1, h: 0.22, detect: true }) : null;
       return {
         kind: 'remix', refId: job.id, title: r.plan?.title || job.source.title, ratio: r.ratio || '16:9', durationSec: r.finalDurationSec || 0, rendered: rendered || Boolean(lib), burnedSubtitles: rendered || Boolean(lib), renderedBy: rendered ? 'ffmpeg' : lib ? 'browser' : null,
         renderUrl: rendered ? `/api/remix/jobs/${job.id}/export?format=mp4&inline=1` : lib ? lib.url : null,
@@ -217,8 +221,9 @@ export class LibraryService {
         subtitles: (r.subtitles || []).filter((s) => !s.card).map(sub), hook: r.plan?.hook ? { text: r.plan.hook, durationSec: r.styleProfile?.hookDurationSec || 3 } : null,
         sfx: r.sfx || [], narration: r.narration?.lines || [], templateId: r.template?.id || null, transcriptExact: r.transcriptExact ?? null, thumbnail: job.source.thumbnail || null,
         // 미리보기에서 원본 박힌 자막이 보이지 않도록 하단을 잘라내고(렌더 계획과 동일), 내레이션 TTS 를 시점에 맞춰 재생. 전체 더빙이면 원본 소리를 끈다
-        cropBottom: (r.cleaning?.steps || []).some((st) => st.id === 'burned-subtitles') ? 0.22 : 0,
-        audio: { muteOriginal: Boolean(r.narration?.replacesOriginalVoice), duckOriginal: true, cues: (r.narration?.lines || []).map((l) => cue(l, l.at, this.store)) },
+        cropBottom: burnedRegion && burnedRegion.y + burnedRegion.h >= 0.95 ? round(burnedRegion.h) : 0,
+        burnedRegion, // { x, y, w, h, detect }: 브라우저 렌더러/플레이어가 이 영역을 잘라내거나 블러로 가린다. detect 면 프레임을 분석해 실제 띠를 찾는다
+        audio: { muteOriginal: Boolean(r.narration?.replacesOriginalVoice), duckOriginal: true, duckLevel: r.narration?.duckLevel ?? 0.25, exclusiveCues: Boolean(r.narration?.exclusive), mode: r.narration?.mode || 'none', cues: (r.narration?.lines || []).map((l) => cue(l, l.at, this.store)) },
         seo: r.seo || null, thumbnailSet: job.thumbnailSet ? { ...job.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/remix/${job.id}/image.svg?v=${encodeURIComponent(job.thumbnailSet.updatedAt)}` } : null,
       };
     }
@@ -244,9 +249,9 @@ export class LibraryService {
 
 // TTS 큐: 실제 파일이 있으면 스트리밍 URL, 없으면 브라우저 내장 음성 정보
 function cue(rec, at, store) {
-  const r = rec.renderId ? store.get('voiceRenders', rec.renderId) : (rec.id && store.get('voiceRenders', rec.id)) || rec;
-  const hasFile = Boolean(r && (r.audioUrl || (r.audioPath && fs.existsSync(r.audioPath))));
-  return { at: round(at), text: rec.text || r?.text || '', engine: r?.engine || rec.engine || 'browser', url: hasFile ? `/api/voice/renders/${r.id}/audio` : null, browser: r?.browser || rec.browser || null, durationSec: r?.durationSec || rec.durationSec || null };
+  const r = (rec.renderId && store.get('voiceRenders', rec.renderId)) || (rec.id && store.get('voiceRenders', rec.id)) || rec;
+  const hasFile = Boolean(r && (r.audioUrl || rec.audioUrl || (r.audioPath && fs.existsSync(r.audioPath))));
+  return { at: round(at), end: rec.end != null ? round(rec.end) : null, text: rec.text || r?.text || '', engine: r?.engine || rec.engine || 'browser', url: hasFile && r?.id ? `/api/voice/renders/${r.id}/audio` : null, browser: r?.browser || rec.browser || null, durationSec: r?.durationSec || rec.durationSec || null };
 }
 function sourceSpec(source = {}) {
   if (source.videoId && (source.type === 'youtube' || source.platform === 'youtube')) return { type: 'youtube', videoId: source.videoId, url: source.url || null, title: source.title || '' };

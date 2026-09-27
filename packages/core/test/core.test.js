@@ -292,7 +292,10 @@ test('내 목소리 TTS: 샘플 업로드 → 프로필 → 합성, 쇼츠 후�
   assert.ok(profile.sampleDurationSec >= 5);
   const tts = await a.voice.synthesize(user.id, { profileId: profile.id, text: '아직도 모르셨나요? 오늘 정리해 드릴게요.', style: 'hook' });
   assert.ok(tts.estimatedSec > 0);
-  assert.ok(['simulated', 'xtts', 'elevenlabs'].includes(tts.engine));
+  // 클론 엔진이 없으면 대체 무료 목소리(엔진은 환경에 따라 edge/google/browser)로 읽고, 어느 프로필의 합성인지 남긴다
+  assert.ok(['simulated', 'xtts', 'elevenlabs', 'edge', 'edge-tts', 'google', 'browser'].includes(tts.engine));
+  assert.equal(tts.profileId, profile.id);
+  if (!['xtts', 'elevenlabs'].includes(tts.engine)) assert.ok(tts.voiceFallback);
   assert.equal(a.voice.renders(user.id).length, 1);
   // 쇼츠 AI 후킹 보이스에 내 목소리 사용
   const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, aiHookVoice: true, voiceProfileId: profile.id } });
@@ -512,4 +515,19 @@ test('저장소 병합: 서로 다른 인스턴스의 변경이 덮어써지지 
   // 삭제보다 나중에 갱신된 레코드는 살아남는다
   const m2 = mergeSnapshots({ users: [{ id: 'b', updatedAt: '2026-01-01T00:03:00.000Z' }], tombstones: [] }, local);
   assert.equal(m2.users.some((u) => u.id === 'b'), true);
+});
+
+test('ffmpeg 렌더 계획: 후킹 보이스는 asplit 으로 두 번 쓰고, 자막 파일 경로(Windows)는 이스케이프되며, 무음 컷은 select/aselect 로 제외된다', async () => {
+  const { renderClip, ffPath } = await import('../src/media.js');
+  assert.equal(ffPath('C:\\Users\\me\\job.ass'), "C\\:/Users/me/job.ass");
+  const os = await import('node:os'); const fsm = await import('node:fs'); const pathm = await import('node:path');
+  const hook = pathm.join(os.tmpdir(), `am-hook-${Date.now()}.mp3`); fsm.writeFileSync(hook, Buffer.alloc(10));
+  try {
+    const plan = await renderClip({ input: 'in.mp4', output: pathm.join(os.tmpdir(), 'am-out.mp4'), start: 10, end: 20, ratio: '9:16', subtitlePath: 'C:\\x\\a.ass', hookAudio: hook, outro: { text: '구독', durationSec: 2 }, cuts: [{ start: 12, end: 13 }, { start: 30, end: 31 }] });
+    if (plan.rendered) return; // ffmpeg 이 있는 환경에서는 실제 렌더 시도 (입력이 없어 여기까지 오지 않는다)
+    const fc = plan.plan.args[plan.plan.args.indexOf('-filter_complex') + 1];
+    assert.ok(fc.includes('asplit[hk1][hk2]') && fc.includes('[abase][hk1]sidechaincompress') && fc.includes('[aduck][hk2]amix'), fc);
+    assert.ok(fc.includes("subtitles='C\\:/x/a.ass'"), fc);
+    assert.ok(fc.includes("select='not(between(t\\,2.000\\,3.000))'") && fc.includes("aselect='not(between(t\\,2.000\\,3.000))'"), '클립 밖의 컷은 제외되고 안의 컷만 클립 기준 시각으로');
+  } finally { fsm.unlinkSync(hook); }
 });

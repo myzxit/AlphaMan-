@@ -1,6 +1,6 @@
 // AI 재구성(리믹스) + 내 목소리 TTS 페이지
 import { get, post, patch, del, uploadFile, downloadUrl, getToken } from './api.js';
-import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, extractVoiceSample, qs, qsa, on } from './ui.js';
+import { esc, html, raw, toast, modal, confirmDialog, promptDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, extractVoiceSample, qs, qsa, on } from './ui.js';
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
 import { mountPlayer, getWithRetry } from './player.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
@@ -29,10 +29,10 @@ export const remix = auth(async ({ view, state, navigate, query }) => {
       <h3 style="margin-top:20px">3. 재구성 옵션</h3>
       <div class="field"><label>목표 길이: <b id="r-len-label">${defs.targetMinutes}분</b> (${defs.limits.minMinutes}~${defs.limits.maxMinutes}분)</label><input id="r-len" type="range" min="${defs.limits.minMinutes}" max="${defs.limits.maxMinutes}" value="${defs.targetMinutes}" /></div>
       <div class="toggle-grid">
-        <label class="check"><input type="checkbox" data-opt="removeBurnedSubtitles" checked/> 원본 자막 제거</label>
+        <label class="check"><input type="checkbox" data-opt="removeBurnedSubtitles" checked/> 원본 자막 제거 <select id="r-subreg" style="width:auto;margin-left:6px" title="원본에 박힌 자막 위치"><option value="auto">위치 자동 감지</option><option value="bottom">하단</option><option value="center">중앙</option><option value="top">상단</option></select></label>
         <label class="check"><input type="checkbox" data-opt="removeSfx" checked/> 원본 효과음 제거</label>
         <label class="check"><input type="checkbox" data-opt="removeBgm" checked/> 원본 배경음악 제거</label>
-        <label class="check"><input type="checkbox" data-opt="keepOriginalVoice" checked/> 원본 목소리 유지</label>
+        <label class="check" title="끄면 내레이션/더빙이 원본 목소리를 대체합니다 (전체 더빙은 항상 대체)"><input type="checkbox" data-opt="keepOriginalVoice" checked/> 원본 목소리 유지 <span class="tiny muted" id="r-voice-hint"></span></label>
         <label class="check"><input type="checkbox" data-opt="newSubtitles" checked/> 새 자막 (템플릿)</label>
         <label class="check"><input type="checkbox" data-opt="newSfx" checked/> 새 효과음</label>
         <label class="check"><input type="checkbox" data-opt="newBgm" checked/> 새 배경음악</label>
@@ -50,7 +50,7 @@ export const remix = auth(async ({ view, state, navigate, query }) => {
       </div>
 
       <h3 style="margin-top:20px">4. 내레이션 목소리 (선택)</h3>
-      <div class="grid grid-2"><div class="field"><label>내레이션</label><select id="r-narr"><option value="none">없음</option><option value="intro">오프닝·마무리만</option><option value="full">전체 내레이션 (섹션마다)</option></select></div>
+      <div class="grid grid-2"><div class="field"><label>내레이션</label><select id="r-narr"><option value="none">없음</option><option value="intro">오프닝·마무리만</option><option value="full">전체 내레이션 (섹션마다 · AI 문장)</option><option value="dub">전체 더빙 (자막 전부를 이 목소리로 읽고 원본 목소리 제거)</option></select><div class="tiny muted" id="r-narr-hint">내레이션을 켜면 선택한 목소리로 실제 음성 파일(MP3)이 만들어져 미리보기·영상 파일에 섞입니다.</div></div>
         <div class="field"><label>목소리</label><div class="row"><select id="r-voice"><optgroup label="무료 한국어 목소리">${raw(freeVoices.filter((v) => (v.lang || 'ko-KR').startsWith('ko')).map((v) => `<option value="free:${v.id}" ${v.id === 'ko-injoon' ? 'selected' : ''}>🔊 ${esc(v.name)} — ${esc(v.tone)}</option>`).join(''))}</optgroup><optgroup label="내 목소리">${raw(profiles.map((p) => `<option value="profile:${p.id}">🎤 ${esc(p.name)} (${p.sampleDurationSec}초 샘플 · ${esc(p.engine)})</option>`).join('') || '<option disabled>프로필 없음</option>')}</optgroup><optgroup label="다른 언어">${raw(freeVoices.filter((v) => !(v.lang || 'ko-KR').startsWith('ko')).map((v) => `<option value="free:${v.id}">🌐 ${esc(v.name)} — ${esc(v.tone)}</option>`).join(''))}</optgroup></select><button class="btn btn-sm" id="r-voice-listen" type="button">▶ 듣기</button></div><div class="tiny muted">내 목소리는 <a href="#/voice">내 목소리 TTS</a>에서 샘플을 올려 만드세요.</div></div></div>
 
       <label class="check" style="margin-top:8px"><input type="checkbox" id="r-rights"/> <span>이 영상은 내가 직접 제작했거나 사용 허가를 받은 영상입니다. (타인의 영상을 무단으로 재구성하는 용도로는 사용할 수 없습니다)</span></label>
@@ -64,6 +64,11 @@ export const remix = auth(async ({ view, state, navigate, query }) => {
   qs('#r-voice-listen').onclick = () => { const v = qs('#r-voice').value || ''; if (v.startsWith('profile:')) playProfileSample(v.slice(8)); else listenFreeVoice(v.replace('free:', ''), freeVoices); };
   qsa('#r-tabs .tab').forEach((t) => { t.onclick = () => { mode = t.dataset.tab; qsa('#r-tabs .tab').forEach((x) => x.classList.remove('active')); t.classList.add('active'); ['youtube', 'file', 'local'].forEach((m) => qs(`#r-${m}`).classList.toggle('hidden', m !== mode)); }; });
   qs('#r-len').oninput = (e) => { qs('#r-len-label').textContent = `${e.target.value}분`; };
+  // 내레이션 모드에 따라 "원본 목소리 유지" 기본값을 맞춘다: 전체 내레이션/더빙 = 원본 목소리 대체
+  const keepCb = qs('[data-opt="keepOriginalVoice"]');
+  const syncVoiceHint = () => { const mode = qs('#r-narr').value; if (mode === 'dub') { keepCb.checked = false; keepCb.disabled = true; } else keepCb.disabled = false; qs('#r-voice-hint').textContent = mode === 'dub' ? '(더빙: 원본 목소리는 제거됩니다)' : mode === 'full' && !keepCb.checked ? '(끄면 내레이션이 원본 목소리를 대체)' : ''; };
+  qs('#r-narr').onchange = () => { const mode = qs('#r-narr').value; if (mode === 'full' || mode === 'dub') keepCb.checked = false; else keepCb.checked = true; syncVoiceHint(); };
+  keepCb.onchange = syncVoiceHint;
   const drop = qs('#r-drop'); const input = qs('#r-file-input');
   drop.onclick = () => input.click(); drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); }; drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && pick(e.dataTransfer.files[0]); };
@@ -77,7 +82,7 @@ export const remix = auth(async ({ view, state, navigate, query }) => {
   qs('#r-go').onclick = async (e) => {
     if (tc.state.busy) return toast('원본 대본 추출이 끝날 때까지 잠시 기다려주세요.', 'info');
     const vsel = qs('#r-voice').value || '';
-    const options = { targetMinutes: Number(qs('#r-len').value), template: qs('#r-template').value, pacing: qs('#r-pacing').value, ratio: qs('#r-ratio').value, transitions: qs('#r-trans').value, colorGrade: qs('#r-color').value, language: qs('#r-lang').value, narration: qs('#r-narr').value, voiceProfileId: vsel.startsWith('profile:') ? vsel.slice(8) : null, voiceId: vsel.startsWith('free:') ? vsel.slice(5) : null, outroText: qs('#r-outro-text').value.trim() || undefined };
+    const options = { targetMinutes: Number(qs('#r-len').value), template: qs('#r-template').value, pacing: qs('#r-pacing').value, ratio: qs('#r-ratio').value, transitions: qs('#r-trans').value, colorGrade: qs('#r-color').value, language: qs('#r-lang').value, narration: qs('#r-narr').value, subtitleRegion: qs('#r-subreg').value, voiceProfileId: vsel.startsWith('profile:') ? vsel.slice(8) : null, voiceId: vsel.startsWith('free:') ? vsel.slice(5) : null, outroText: qs('#r-outro-text').value.trim() || undefined };
     qsa('[data-opt]').forEach((c) => { options[c.dataset.opt] = c.checked; });
     const body = { options, referenceUrl: qs('#r-ref').value.trim() || null, rightsConfirmed: qs('#r-rights').checked, ...tc.payload() };
     if (mode === 'youtube') { body.url = qs('#r-url').value; body.options.estimatedDurationSec = Number(qs('#r-est').value || 10) * 60; if (!body.url.trim()) return toast('원본 영상 링크를 입력해주세요.', 'error'); }
@@ -93,23 +98,27 @@ export const remixJob = auth(async ({ view, params, navigate }) => {
   let job = await get(`/api/remix/jobs/${params.id}`);
   let timer = null;
   bindRenderButtons(view, () => job.result?.plan?.title || job.source.title);
-  window.addEventListener('am:rendered', () => { get(`/api/remix/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); }, { once: true });
+  const onRendered = () => { if (!location.hash.startsWith(`#/remix/${job.id}`)) return; get(`/api/remix/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); };
+  window.addEventListener('am:rendered', onRendered);
+  window.addEventListener('hashchange', () => window.removeEventListener('am:rendered', onRendered), { once: true });
+  // 클릭 핸들러는 한 번만 등록 (draw 는 폴링마다 다시 그려진다)
+  on(view, 'click', '[data-play-narr]', async (e, t) => { const line = job.result?.narration?.lines?.[Number(t.dataset.playNarr)]; if (line) playRender(line); });
+  on(view, 'click', '[data-export]', async (e, t) => {
+    const fmt = t.dataset.export;
+    const res = await fetch(downloadUrl(`/api/remix/jobs/${job.id}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } });
+    if ((res.headers.get('content-type') || '').includes('json') && fmt === 'mp4') { await res.json().catch(() => ({})); openRenderDialog({ kind: 'remix', refId: job.id, title: job.result?.plan?.title || job.source.title }); return; }
+    saveBlob(await res.blob(), `${job.id}.${fmt}`);
+  });
+  bindSeoButtons(view);
   const stepNames = { queued: '대기', ingest: '원본 가져오기', reference: '참고 영상 분석', transcribing: '음성 인식', cleaning: '원본 정리 (자막·효과음·배경음 제거)', planning: 'AI 구성 계획', rebuilding: '새 자막·효과음·내레이션', rendering: '렌더링', done: '완료', failed: '실패' };
   const draw = () => {
     const r = job.result;
     view.innerHTML = html`<div class="row row-between"><div><a href="#/remix" class="small">← AI 재구성</a><h1>${r?.plan?.title || job.source.title}</h1><div class="muted small">원본: ${job.source.title} · ${fmtTime(job.source.durationSec)} · 목표 ${job.options.targetMinutes}분 · ${job.minutesCharged}분 차감${job.reference ? raw(` · 참고: <a href="${esc(job.reference.url)}" target="_blank" rel="noopener">${esc(job.reference.title)}</a>`) : ''}</div></div>
       <div class="row">${job.status === 'done' ? raw('<a class="btn" href="#/library?kind=remix">📁 보관함</a>') : ''}<button class="btn" id="rj-regen" ${job.status === 'done' || job.status === 'failed' ? '' : 'disabled'}>다시 만들기 (${(job.minutesCharged / 2).toFixed(1)}분)</button><button class="btn btn-danger" id="rj-del">삭제</button></div></div>
       ${job.status !== 'done' ? raw(`<div class="card"><div class="row row-between"><b>${esc(stepNames[job.step] || job.step)}</b><span>${job.progress}%</span></div><div class="progress"><div style="width:${job.progress}%"></div></div><div class="log" style="margin-top:10px">${job.log.map((l) => `${esc(l.at.slice(11, 19))} [${esc(l.step)}] ${esc(l.message)}`).join('\n')}</div>${job.error ? `<p class="badge badge-danger">${esc(job.error)}</p>` : ''}</div>`) : raw(renderResult(job))}`;
-    if (job.status === 'done') { const host = qs('#rj-player'); if (host) getWithRetry(`/api/preview/remix/${job.id}`).then((spec) => mountPlayer(host, spec)).catch((err) => { host.innerHTML = `<div class="tiny muted">미리보기를 불러오지 못했습니다: ${esc(err.message)} <button class="btn btn-sm" onclick="location.reload()">다시 시도</button></div>`; }); bindSeoButtons(view); }
-    on(view, 'click', '[data-play-narr]', async (e, t) => { const line = job.result?.narration?.lines?.[Number(t.dataset.playNarr)]; if (line) playRender(line); });
+    if (job.status === 'done') { const host = qs('#rj-player'); if (host) getWithRetry(`/api/preview/remix/${job.id}`).then((spec) => mountPlayer(host, spec)).catch((err) => { host.innerHTML = `<div class="tiny muted">미리보기를 불러오지 못했습니다: ${esc(err.message)} <button class="btn btn-sm" onclick="location.reload()">다시 시도</button></div>`; }); }
     qs('#rj-regen').onclick = async () => { if (!(await confirmDialog(`다시 만들면 이용권 ${(job.minutesCharged / 2).toFixed(1)}분이 차감됩니다.`))) return; try { job = await post(`/api/remix/jobs/${job.id}/regenerate`); await window.AlphaManApp.refreshUser(); draw(); poll(); } catch (err) { toast(err.message, 'error'); } };
     qs('#rj-del').onclick = async () => { if (await confirmDialog('작업을 삭제할까요?')) { await del(`/api/remix/jobs/${job.id}`); navigate('/remix'); } };
-    on(view, 'click', '[data-export]', async (e, t) => {
-      const fmt = t.dataset.export;
-      const res = await fetch(downloadUrl(`/api/remix/jobs/${job.id}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } });
-      if ((res.headers.get('content-type') || '').includes('json') && fmt === 'mp4') { await res.json().catch(() => ({})); openRenderDialog({ kind: 'remix', refId: job.id, title: job.result?.plan?.title || job.source.title }); return; }
-      saveBlob(await res.blob(), `${job.id}.${fmt}`);
-    });
     const save = qs('#rj-save'); if (save) save.onclick = async () => {
       const subs = qs('#rj-subs').value.split('\n').map((l) => l.split('|')).filter((p) => p.length >= 3).map(([start, end, ...t]) => ({ start: Number(start), end: Number(end), text: t.join('|') }));
       const sfx = qs('#rj-sfx').value.split('\n').map((l) => l.split('|')).filter((p) => p.length >= 2).map(([at, name]) => ({ at: Number(at), name: name.trim() }));
@@ -133,9 +142,9 @@ function renderResult(job) {
       <div class="tiny muted">원본 타임라인 (유지 구간)</div><div class="timeline">${r.plan.keep.map((k) => `<div class="seg" style="left:${(k.start / D) * 100}%;width:${Math.max(0.3, ((k.end - k.start) / D) * 100)}%" title="${esc(k.reason)}"></div>`).join('')}</div>
       <div class="tiny muted" style="margin-top:8px">새 타임라인 ${fmtTime(F)} (목표 ${job.options.targetMinutes}분${r.extended ? ` · 원본 ${fmtTime(D)} → ${r.stretchFactor}배 확장` : ''}) · 항목 ${r.timeline.length}개 · 전환 ${r.transitions.length}개 · 효과음 ${r.sfx.length}개</div><div class="timeline">${r.timeline.map((t) => `<div class="seg" style="left:${(t.newStart / F) * 100}%;width:${Math.max(0.3, ((t.newEnd - t.newStart) / F) * 100)}%;background:${{ source: 'var(--primary)', replay: 'var(--accent)', slowmo: '#16a34a', card: '#6b7280' }[t.kind] || 'var(--primary)'}" title="${esc(t.kind)} ${esc(t.title || t.reason || '')}"></div>`).join('')}${r.sfx.map((s) => `<div class="cut" style="left:${(s.at / F) * 100}%;width:0.4%" title="${esc(s.name)}"></div>`).join('')}</div>
       <div class="chips" style="margin-top:6px"><span class="chip" style="border-color:var(--primary)">원본 구간 ${r.timeline.filter((t) => t.kind === 'source').length}</span><span class="chip" style="border-color:var(--accent)">리플레이 ${r.timeline.filter((t) => t.kind === 'replay').length}</span><span class="chip" style="border-color:#16a34a">슬로모션 ${r.timeline.filter((t) => t.kind === 'slowmo').length}</span><span class="chip">카드 ${r.timeline.filter((t) => t.kind === 'card').length}</span></div></div>
-    <div class="card"><h3>원본 정리</h3>${r.cleaning.steps.map((s) => `<div class="small">• ${esc(s.id)} <span class="muted">(${esc(s.method)}) ${esc(s.note || '')}</span></div>`).join('')}</div>
+    <div class="card"><h3>원본 정리</h3>${r.cleaning.steps.map((s) => `<div class="small">• ${esc(s.id)} <span class="muted">(${esc(s.method === 'browser' ? '영상 파일 만들기 시 브라우저에서 적용' : s.method)}) ${esc(s.note || '')}</span></div>`).join('')}${r.narration?.replacesOriginalVoice ? '<div class="small">• 원본 목소리 제거 <span class="muted">(내레이션/더빙으로 대체 · 미리보기와 영상 파일에서 원본 소리 끔)</span></div>' : ''}</div>
     ${sp ? `<div class="card"><h3>참고 영상처럼 편집됨</h3><div class="small muted">참고: <a href="${esc(sp.reference?.url)}" target="_blank" rel="noopener">${esc(sp.reference?.title)}</a> (${sp.reference?.isShorts ? '쇼츠' : '롱폼'}${sp.reference?.durationSec ? ` · ${fmtTime(sp.reference.durationSec)}` : ''}) · 분석 ${esc(sp.engine)}</div><div class="chips" style="margin-top:6px"><span class="chip">호흡 ${esc(sp.pacing)} (${sp.avgShotSec}초/컷, ${sp.cutsPerMinute}컷/분)</span><span class="chip">후킹 ${sp.hookDurationSec}초 · ${esc(sp.hookType)}</span><span class="chip">자막 ${esc(sp.subtitleStyle)} · ${esc(sp.subtitlePosition)}</span><span class="chip">톤 ${esc(sp.tone)}</span><span class="chip">효과음 ${esc(sp.sfxDensity)}</span><span class="chip">BGM ${esc(sp.bgm)}</span><span class="chip">전환 ${esc(sp.transitions)}</span><span class="chip">색감 ${esc(sp.colorGrade)}</span><span class="chip">비율 ${esc(sp.ratio)}</span><span class="chip">줌 ${esc(sp.zoomStyle)}</span></div><div class="tiny muted" style="margin-top:8px">섹션 구조 · 구간 길이 비율 (참고 영상 그대로)</div><ol class="small">${(sp.structure || []).map((s, i) => `<li>${esc(s)} <span class="muted">${Math.round((sp.segmentPattern?.[i] || 0) * 100)}%</span></li>`).join('')}</ol></div>` : '<div class="card small muted">참고 영상 링크를 넣지 않아 장르 기본 스타일로 편집했습니다. 다음에는 "참고 영상 링크"에 원하는 편집 스타일의 영상을 넣어보세요.</div>'}
-    ${r.narration ? `<div class="card"><h3>내레이션 (${r.narration.mode === 'full' ? '전체' : '오프닝·마무리'} · ${esc(r.narration.voice?.label || '내 목소리')})</h3>${r.narration.lines.map((l, i) => `<div class="small" style="padding:4px 0;border-bottom:1px dashed var(--border)"><button class="btn btn-sm" data-play-narr="${i}" title="들어보기">▶</button> <span class="kbd">${fmtTime(l.at)}</span> ${esc(l.text)} <span class="tiny muted">${esc(l.engine)}${l.audioPath ? ' · 음성 파일' : l.engine === 'browser' ? ' · 브라우저 음성' : ' · 합성 계획'}</span></div>`).join('')}</div>` : ''}
+    ${r.narration ? `<div class="card"><h3>${{ dub: '전체 더빙', full: '전체 내레이션', intro: '오프닝·마무리 내레이션' }[r.narration.mode] || '내레이션'} (${esc(r.narration.voice?.label || '내 목소리')}${r.narration.replacesOriginalVoice ? ' · 원본 목소리 제거' : ''})</h3>${r.narration.lines.some((l) => l.voiceFallback) ? `<div class="tiny" style="color:var(--warn);margin-bottom:6px">내 목소리 복제 엔진(ELEVENLABS_API_KEY/XTTS)이 없어 프로필의 대체 무료 목소리로 읽었습니다. <a href="#/voice">내 목소리</a>에서 대체 목소리를 바꿀 수 있습니다.</div>` : ''}<div class="tiny muted" style="margin-bottom:6px">음성 파일 ${r.narration.withFile ?? r.narration.lines.filter((l) => l.audioPath || l.audioUrl).length}/${r.narration.lines.length}</div>${r.narration.lines.map((l, i) => `<div class="small" style="padding:4px 0;border-bottom:1px dashed var(--border)"><button class="btn btn-sm" data-play-narr="${i}" title="들어보기">▶</button> <span class="kbd">${fmtTime(l.at)}</span> ${esc(l.text)} <span class="tiny muted">${esc(l.engine)}${l.audioPath || l.audioUrl ? ' · 음성 파일' : l.engine === 'browser' ? ' · 브라우저 음성' : ' · 합성 계획'}</span></div>`).join('')}</div>` : ''}
   </div><div class="col">
     <div class="card"><h3>편집</h3><div class="field"><label>제목</label><input id="rj-title" value="${esc(r.plan.title)}" /></div>
       <div class="field"><label>자막 (시작|끝|텍스트)</label><textarea id="rj-subs" rows="10">${r.subtitles.map((s) => `${s.start}|${s.end}|${esc(s.text)}`).join('\n')}</textarea></div>
@@ -148,8 +157,10 @@ function renderResult(job) {
 // ---------------- 내 목소리 TTS ----------------
 export const voice = auth(async ({ view, state, navigate }) => {
   const [{ profiles, providers, freeVoices = [] }, renders] = await Promise.all([get('/api/voice/profiles'), get('/api/voice/renders')]);
-  const engineLabel = providers.elevenlabs ? 'ElevenLabs (실제 음성 클론)' : providers.xtts ? '로컬 XTTS (실제 음성 클론)' : '시뮬레이션 (합성 계획만 생성 - ELEVENLABS_API_KEY 또는 로컬 XTTS 설정 시 실제 음성)';
-  const freeEngine = providers.edge ? 'edge-tts (서버에서 MP3 생성)' : '브라우저 내장 음성 (무료 · 오프라인) — 서버에 edge-tts 를 설치하면 MP3 파일도 생성';
+  const engineLabel = providers.elevenlabs ? 'ElevenLabs (실제 음성 클론)' : providers.xtts ? '로컬 XTTS (실제 음성 클론)' : '음성 클론 엔진 없음 — 내 목소리 프로필은 아래 "대체 목소리"(무료 신경망 음성)로 읽어 실제 MP3 를 만듭니다. ELEVENLABS_API_KEY 또는 로컬 XTTS 를 설정하면 진짜 내 목소리로 복제됩니다';
+  const freeEngine = providers.edge || providers.edgeNode ? 'Edge 신경망 TTS (서버에서 MP3 생성)' : providers.google ? 'Google 읽어주기 (서버에서 MP3 생성)' : '브라우저 내장 음성 (무료 · 오프라인) — 서버가 인터넷에 연결되면 MP3 파일도 생성';
+  const koVoices = freeVoices.filter((v) => (v.lang || 'ko-KR').startsWith('ko'));
+  const fallbackSelect = (p) => `<select data-fallback="${p.id}" style="width:auto;max-width:220px" title="클론 엔진이 없을 때 대신 읽을 무료 목소리">${(p.language && p.language !== 'ko' ? freeVoices : koVoices).map((v) => `<option value="${esc(v.id)}" ${(p.fallbackVoiceId || '') === v.id || (!p.fallbackVoiceId && v.id === koVoices[0]?.id && (p.language || 'ko') === 'ko') ? 'selected' : ''}>${esc(v.name)} — ${esc(v.tone)}</option>`).join('')}</select>`;
   const LANGS = [['ko', '한국어'], ['en', 'English'], ['ja', '日本語'], ['zh', '中文']];
   const voiceCard = (v) => `<div class="voice-card" data-voice="${esc(v.id)}"><div class="row row-between"><b>${esc(v.name)}</b><span class="badge badge-soft">${v.gender === 'female' ? '여성' : '남성'} · ${esc((v.lang || 'ko-KR').split('-')[0])}</span></div><div class="tiny muted">${esc(v.tone)}</div><div class="row"><button class="btn btn-sm btn-primary" data-listen="${esc(v.id)}">▶ 듣기</button><button class="btn btn-sm" data-read="${esc(v.id)}" title="아래 문장을 이 목소리로 읽기">문장 읽기</button></div></div>`;
   view.innerHTML = html`<h1>🎤 TTS 목소리 · 내 목소리</h1><p class="muted">무료 기본 목소리 ${freeVoices.length}종을 바로 들어보고, 아무 말이나 녹음한 내 목소리 샘플을 올려 음성 프로필을 만들면 저장되어 쇼츠 AI 후킹 보이스와 AI 재구성 내레이션에 계속 쓸 수 있습니다.</p>
@@ -165,7 +176,7 @@ export const voice = auth(async ({ view, state, navigate }) => {
       <button class="btn btn-primary btn-block" id="v-create" style="margin-top:10px">프로필 만들고 저장</button>
       <div class="tiny muted" style="margin-top:8px">음성 클론 엔진: ${engineLabel}. 프로필과 샘플은 계정에 저장되어 다음에 접속해도 그대로 남아 있습니다.</div></div>
       <div class="card"><h3>읽어보기</h3><div class="field"><label>목소리</label><select id="v-profile"><optgroup label="내 목소리">${raw(profiles.map((p) => `<option value="profile:${p.id}">🎤 ${esc(p.name)}</option>`).join('') || '<option disabled>아직 프로필이 없습니다</option>')}</optgroup><optgroup label="무료 목소리">${raw(freeVoices.map((v) => `<option value="free:${v.id}">🔊 ${esc(v.name)} — ${esc(v.tone)}</option>`).join(''))}</optgroup></select></div><div class="field"><textarea id="v-text" rows="3" placeholder="읽을 문장을 입력하세요. 예) 아직도 모르셨나요? 오늘 이 영상 하나로 정리해 드릴게요.">아직도 모르셨나요? 오늘 이 영상 하나로 정리해 드릴게요.</textarea></div><div class="row"><select id="v-style" style="width:auto"><option value="natural">자연스럽게</option><option value="hook">후킹 (빠르고 강하게)</option><option value="calm">차분한 내레이션</option><option value="energetic">에너지 넘치게</option></select><button class="btn btn-primary" id="v-speak">▶ 합성해서 듣기</button><button class="btn" id="v-stop">■ 정지</button></div><div id="v-out" style="margin-top:8px"></div></div></div>
-    <div class="col"><div class="card"><h3>내 프로필 (${profiles.length})</h3>${raw(profiles.length ? profiles.map((p) => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="row row-between"><div><b>${esc(p.name)}</b> <span class="badge badge-soft">${esc(p.engine)}</span> <span class="badge badge-success">저장됨</span><div class="tiny muted">${esc(p.sampleFilename)} · ${p.sampleDurationSec}초 · 품질 ${esc(p.quality)} · ${fmtDate(p.createdAt)}${p.sampleUrl ? ' · 클라우드 보관' : ''}</div><div class="tiny muted">${esc(p.characteristics?.recommendation || '')}</div></div></div><div class="row" style="margin-top:6px;flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-sample="${p.id}">▶ 샘플 듣기</button><button class="btn btn-sm" data-read-profile="${p.id}">내 목소리로 문장 읽기</button><button class="btn btn-sm" data-rename="${p.id}">이름</button><button class="btn btn-sm btn-danger" data-del="${p.id}">삭제</button></div></div>`).join('') : '<p class="muted">아직 프로필이 없습니다. 왼쪽에서 샘플을 올려 만들면 여기에 저장됩니다.</p>')}</div>
+    <div class="col"><div class="card"><h3>내 프로필 (${profiles.length})</h3>${raw(profiles.length ? profiles.map((p) => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="row row-between"><div><b>${esc(p.name)}</b> <span class="badge badge-soft">${esc(p.engine)}</span> <span class="badge badge-success">저장됨</span><div class="tiny muted">${esc(p.sampleFilename)} · ${p.sampleDurationSec}초 · 품질 ${esc(p.quality)} · ${fmtDate(p.createdAt)}${p.sampleUrl ? ' · 클라우드 보관' : ''}</div><div class="tiny muted">${esc(p.characteristics?.recommendation || '')}</div></div></div>${p.engine === 'simulated' ? `<div class="row tiny muted" style="margin-top:6px;gap:6px;align-items:center">대체 목소리: ${fallbackSelect(p)}</div>` : ''}<div class="row" style="margin-top:6px;flex-wrap:wrap"><button class="btn btn-sm btn-primary" data-sample="${p.id}">▶ 샘플 듣기</button><button class="btn btn-sm" data-read-profile="${p.id}">내 목소리로 문장 읽기</button><button class="btn btn-sm" data-rename="${p.id}">이름</button><button class="btn btn-sm btn-danger" data-del="${p.id}">삭제</button></div></div>`).join('') : '<p class="muted">아직 프로필이 없습니다. 왼쪽에서 샘플을 올려 만들면 여기에 저장됩니다.</p>')}</div>
       <div class="card"><h3>최근 합성</h3>${raw(renders.length ? renders.slice(0, 10).map((r) => `<div class="small" style="padding:6px 0;border-bottom:1px dashed var(--border)"><button class="btn btn-sm" data-play-render="${r.id}">▶</button> ${esc(r.text.slice(0, 60))} <span class="tiny muted">${esc(r.voiceName ? `${r.voiceName} · ` : '')}${esc(r.engine)} · ${r.durationSec}초</span></div>`).join('') : '<p class="muted">없음</p>')}</div>
       <div class="card small muted"><b>어디에 쓰이나요?</b><br/>· 쇼츠 스튜디오 → "AI 후킹 보이스" 목소리 선택 (무료 목소리 또는 내 목소리)<br/>· AI 재구성 → 내레이션 목소리 선택<br/>· 여기서 바로 문장을 읽혀 확인</div></div></div>`;
   let uploadId = null; let localPath = null;
@@ -216,7 +227,8 @@ export const voice = auth(async ({ view, state, navigate }) => {
       if (!r.audioPath) playRender(r);
     } catch (err) { toast(err.message, 'error'); }
   };
+  on(view, 'change', '[data-fallback]', async (e, t) => { try { await patch(`/api/voice/profiles/${t.dataset.fallback}`, { fallbackVoiceId: t.value }); toast('대체 목소리를 저장했습니다. 다음 합성부터 적용됩니다.'); } catch (err) { toast(err.message, 'error'); } });
   on(view, 'click', '[data-del]', async (e, t) => { if (await confirmDialog('프로필을 삭제할까요?')) { await del(`/api/voice/profiles/${t.dataset.del}`); navigate(`/voice?r=${Date.now()}`); } });
-  on(view, 'click', '[data-rename]', async (e, t) => { const name = prompt('새 이름'); if (name) { await patch(`/api/voice/profiles/${t.dataset.rename}`, { name }); navigate(`/voice?r=${Date.now()}`); } });
+  on(view, 'click', '[data-rename]', async (e, t) => { const cur = profiles.find((p) => p.id === t.dataset.rename); const name = await promptDialog('새 이름', cur?.name || '', { title: '프로필 이름 변경' }); if (name && name.trim()) { try { await patch(`/api/voice/profiles/${t.dataset.rename}`, { name: name.trim() }); navigate(`/voice?r=${Date.now()}`); } catch (err) { toast(err.message, 'error'); } } });
 });
 

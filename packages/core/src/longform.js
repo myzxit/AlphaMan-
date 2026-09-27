@@ -26,13 +26,21 @@ export class LongformEngine {
     }
     const opts = { removeSilence: true, silenceThreshold: 0.7, autoSubtitles: true, chapters: true, jumpCuts: true, language: 'ko', ...options };
     const minutes = Math.round((source.durationSec / 60) * 100) / 100;
-    const job = this.store.insert('longformJobs', { userId, source, options: opts, minutesCharged: minutes, status: 'processing', progress: 10, result: null });
-    this.credits.charge(userId, minutes, `롱폼 컷편집: ${source.title}`, { jobId: job.id });
+    const job = this.store.insert('longformJobs', { userId, source, options: opts, minutesCharged: minutes, lastCharged: minutes, status: 'processing', progress: 10, result: null });
+    try { this.credits.charge(userId, minutes, `롱폼 컷편집: ${source.title}`, { jobId: job.id }); } catch (err) { this.store.remove('longformJobs', job.id); throw err; } // 402 면 고아 작업을 남기지 않는다
     this.activity?.start(userId, { kind: 'longform', refId: job.id, title: source.title, input: { url: url || null, uploadId: uploadId || null, options: { ...opts, transcript: undefined }, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' } });
-    const run = () => this._run(job.id).catch((e) => this._fail(job.id, e));
-    if (this.activity?.queue) this.activity.queue.push(run, { kind: 'longform', refId: job.id });
-    else { const t = setTimeout(run, 10); if (t.unref) t.unref(); }
+    this._schedule(job.id);
     return job;
+  }
+  _schedule(jobId) {
+    const run = () => this._run(jobId).catch((e) => this._fail(jobId, e));
+    if (this.activity?.queue) this.activity.queue.push(run, { kind: 'longform', refId: jobId });
+    else { const t = setTimeout(run, 10); if (t.unref) t.unref(); }
+  }
+  // 서버리스 동결 등으로 멈춘 작업은 조회 시 다시 돌린다
+  _recover(job) {
+    if (!this.activity || !job || !['queued', 'processing'].includes(job.status)) return job;
+    return this.activity.recoverStale('longform', 'longformJobs', job, { reschedule: (id) => this._schedule(id), onGiveUp: (id, err) => this._fail(id, err), reset: () => ({ result: null, progress: 10 }) });
   }
   _fail(jobId, err) {
     const cancelled = Boolean(err?.cancelled);
@@ -86,9 +94,13 @@ export class LongformEngine {
     return Array.isArray(res) ? res.map((c) => ({ at: Number(c.at) || 0, title: String(c.title || '').slice(0, 40) })) : fallback();
   }
 
-  list(userId) { return this.store.find('longformJobs', (j) => j.userId === userId && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
-  get(userId, id) { const j = this.store.get('longformJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.'); return j; }
-  remove(userId, id) { this.get(userId, id); this.library?.removeByRef('longform', id); return this.store.remove('longformJobs', id); }
+  list(userId) { return this.store.find('longformJobs', (j) => j.userId === userId && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((j) => this._recover(j)); }
+  get(userId, id) { const j = this.store.get('longformJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.'); return this._recover(j); }
+  remove(userId, id) {
+    const j = this.get(userId, id);
+    if (['queued', 'processing'].includes(j.status)) { this.store.update('longformJobs', id, { cancelRequested: true }); try { this.credits.grant(userId, j.lastCharged ?? j.minutesCharged, '진행 중 롱폼 삭제 환불', { jobId: id }); } catch { /* 무제한 계정 */ } this.activity?.fail('longform', id, Object.assign(new Error('삭제됨'), { cancelled: true })); }
+    this.library?.removeByRef('longform', id); return this.store.remove('longformJobs', id);
+  }
 }
 
 function buildTimeline(duration, cuts) {

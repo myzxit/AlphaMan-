@@ -1,5 +1,5 @@
 // 앱 셸: 해시 라우터, 사이드바, 테마, 알림(Alt+T), 픽시(Ctrl+K), 의견 보내기, 프로그램(데스크톱) 브리지 감지
-import { get, post, setToken, getToken } from './api.js';
+import { get, post, patch, setToken, getToken } from './api.js';
 import { esc, html, raw, toast, modal, fmtDate, creditsLabel, qs, qsa, on, errorScreen } from './ui.js';
 import * as pub from './pages-public.js';
 import * as appPages from './pages-app.js';
@@ -56,7 +56,8 @@ async function render() {
   const [path, query = ''] = full.split('?');
   const params = Object.fromEntries(new URLSearchParams(query));
   const route = matchRoute(path) || { handler: pub.notFound, params: {} };
-  const view = qs('#view');
+  // 라우트마다 새 #view 요소를 쓴다: 이전 페이지가 on(view, ...) 로 붙인 클릭 핸들러가 다음 페이지에서 겹쳐 실행되지 않도록
+  const old = qs('#view'); const view = old.cloneNode(false); old.replaceWith(view);
   view.innerHTML = '<div class="skeleton-list" aria-busy="true"><div class="card skeleton-card"><div class="skeleton-line" style="width:40%"></div><div class="skeleton-line" style="width:90%"></div><div class="skeleton-line" style="width:70%"></div></div></div>';
   document.getElementById('app').classList.remove('sidebar-mobile-open');
   const gsi = qs('#global-search'); if (gsi && path === '/search') gsi.value = params.q || '';
@@ -152,7 +153,7 @@ function cycleTheme() {
   document.documentElement.setAttribute('data-theme', next);
   try { localStorage.setItem('am_theme', next); } catch { /* ignore */ }
   toast(`테마: ${{ system: '시스템', light: '라이트', dark: '다크' }[next]}`);
-  if (state.user) post('/api/auth/me', { theme: next }).catch(() => {});
+  if (state.user) patch('/api/auth/me', { theme: next }).then(() => { if (state.user) state.user.theme = next; }).catch(() => {});
 }
 
 // ---- 픽시 커맨드 센터 ----

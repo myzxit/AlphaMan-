@@ -3,7 +3,7 @@ import { get, post, put, api, downloadUrl, getToken } from './api.js';
 import { esc, html, raw, toast, modal, fmtTime, qs, qsa, on } from './ui.js';
 
 const KIND_LABEL = { shorts: '쇼츠', remix: 'AI 재구성', longform: '롱폼 컷편집' };
-async function copy(text, label = '복사됨') { try { await navigator.clipboard.writeText(text); toast(`${label}: 클립보드에 복사했습니다.`); } catch { prompt('복사하세요', text); } }
+async function copy(text, label = '복사됨') { try { await navigator.clipboard.writeText(text); toast(`${label}: 클립보드에 복사했습니다.`); } catch { modal(`<p class="small muted">클립보드를 쓸 수 없어 직접 복사하세요.</p><textarea rows="4" style="width:100%" readonly>${esc(text)}</textarea>`, { title: '복사' }); } }
 
 // ---------------- 유튜브 최적화 ----------------
 export async function openSeo(kind, refId, { title = '유튜브 최적화' } = {}) {
@@ -39,6 +39,8 @@ export async function openThumbnail(kind, refId, { title = '썸네일' } = {}) {
   const host = m.el.querySelector('.thumb-host');
   const state = { candidateId: data.set.selectedId, headline: data.set.headline, subline: data.set.subline, style: data.set.style, palette: data.set.palette, imageUrl: data.set.imageUrl };
   const svgUrl = () => downloadUrl(`/api/thumbnail/${kind}/${refId}/image.svg?v=${encodeURIComponent(data.set.updatedAt)}`);
+  // 장면 선택 핸들러는 한 번만 등록 (draw 마다 등록하면 클릭 한 번에 여러 번 저장된다)
+  on(host, 'click', '[data-cand]', (e, t) => { const c = data.candidates.find((x) => x.id === t.dataset.cand); if (!c) return; if (!c.url && c.captureFrom) return captureFrame(c.captureFrom, c.at); state.candidateId = c.id; qsa('.thumb-cand', host).forEach((x) => x.classList.toggle('active', x.dataset.cand === c.id)); apply(); });
   const draw = () => {
     host.innerHTML = html`<div class="thumb-editor"><div>
         <div class="thumb-preview"><img id="thumb-img" src="${svgUrl()}" alt="썸네일 미리보기" /></div>
@@ -52,7 +54,6 @@ export async function openThumbnail(kind, refId, { title = '썸네일' } = {}) {
         <div class="grid grid-2"><div class="field"><label>스타일</label><select id="thumb-style">${raw(data.styles.map((s) => `<option value="${s.id}" ${s.id === state.style ? 'selected' : ''}>${esc(s.name)} — ${esc(s.desc)}</option>`).join(''))}</select></div>
           <div class="field"><label>색상</label><select id="thumb-palette">${raw(Object.entries(data.palettes).map(([k, [a]]) => `<option value="${k}" ${k === state.palette ? 'selected' : ''}>${k} (${a})</option>`).join(''))}</select></div></div>
         <button class="btn btn-primary btn-block" id="thumb-apply">적용</button></div></div>`;
-    on(host, 'click', '[data-cand]', (e, t) => { const c = data.candidates.find((x) => x.id === t.dataset.cand); if (!c) return; if (!c.url && c.captureFrom) return captureFrame(c.captureFrom, c.at); state.candidateId = c.id; qsa('.thumb-cand', host).forEach((x) => x.classList.toggle('active', x.dataset.cand === c.id)); apply(); });
     qs('#thumb-apply', host).onclick = apply;
     ['thumb-style', 'thumb-palette'].forEach((id) => { qs(`#${id}`, host).onchange = apply; });
     qs('#thumb-auto', host).onclick = async () => { try { data.set = await post(`/api/thumbnail/${kind}/${refId}/auto`, {}); Object.assign(state, { candidateId: data.set.selectedId, headline: data.set.headline, subline: data.set.subline, style: data.set.style, palette: data.set.palette }); draw(); } catch (err) { toast(err.message, 'error'); } };

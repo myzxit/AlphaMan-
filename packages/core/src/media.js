@@ -172,25 +172,34 @@ export async function fetchYoutubeMeta(videoId) {
 
 // 실제 클립 렌더링 (프로그램 버전/ffmpeg 설치 환경). ffmpeg 이 없으면 렌더 계획(JSON)만 남긴다.
 // hookAudio: 첫 3초 AI 후킹 보이스 파일(있으면 앞에 섞고 원본은 덕킹) · vocalsPath: demucs 로 분리한 목소리 트랙(있으면 원본 오디오 대신 사용)
-export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1, outro = null, hookAudio = null, vocalsPath = null, cropBottom = 0 }) {
+// ffmpeg 필터 옵션 안의 파일 경로: Windows 경로의 백슬래시·드라이브 콜론(C:\...)과 따옴표를 이스케이프한다
+export function ffPath(p) { return String(p).replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''"); }
+
+// cuts: 클립 안에서 잘라낼 무음 구간 [{start,end}] (원본 절대 시각). -ss 뒤 입력의 시각은 0 부터 시작하므로 클립 시작 기준으로 바꿔 select/aselect 로 제외한다
+export async function renderClip({ input, output, start, end, ratio = '9:16', subtitlePath, speedUp = 1, outro = null, hookAudio = null, vocalsPath = null, cropBottom = 0, cuts = [] }) {
   const dims = ratio === '9:16' ? '1080:1920' : ratio === '1:1' ? '1080:1080' : ratio === '4:5' ? '1080:1350' : '1920:1080';
   const [w, h] = dims.split(':');
-  const filters = [...(cropBottom > 0 ? [`crop=iw:ih*${(1 - cropBottom).toFixed(2)}:0:0`] : []), `scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'setsar=1'];
-  if (subtitlePath) filters.push(`subtitles='${subtitlePath.replace(/'/g, "\\'")}'`);
+  const validCuts = (cuts || []).map((c) => ({ s: Math.max(0, Number(c.start) - start), e: Math.min(end - start, Number(c.end) - start) })).filter((c) => c.e > c.s + 0.05);
+  const cutExpr = validCuts.length ? `not(${validCuts.map((c) => `between(t\\,${c.s.toFixed(3)}\\,${c.e.toFixed(3)})`).join('+')})` : null;
+  const vCut = cutExpr ? [`select='${cutExpr}'`, 'setpts=N/FRAME_RATE/TB'] : [];
+  const aCut = cutExpr ? `aselect='${cutExpr}',asetpts=N/SR/TB,` : '';
+  const filters = [...vCut, ...(cropBottom > 0 ? [`crop=iw:ih*${(1 - cropBottom).toFixed(2)}:0:0`] : []), `scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'setsar=1'];
+  if (subtitlePath) filters.push(`subtitles='${ffPath(subtitlePath)}'`);
   if (speedUp !== 1) filters.push(`setpts=PTS/${speedUp}`);
   let args;
   const useVocals = vocalsPath && fs.existsSync(vocalsPath);
   const useHook = hookAudio && fs.existsSync(hookAudio);
-  if (outro && outro.durationSec > 0 || useVocals || useHook) {
+  if (outro && outro.durationSec > 0 || useVocals || useHook || cutExpr) {
     if (!(outro && outro.durationSec > 0)) outro = { text: '', durationSec: 0 };
     // 마무리 구독 카드: 클립 뒤에 CTA 카드(검정 배경 + 큰 글씨 + 무음)를 이어 붙인다
     const text = String(outro.text || '구독 · 좋아요 · 알림 설정').replace(/[\\':]/g, ' ');
     const d = Math.max(0.1, outro.durationSec || 0.1);
     const inputs = ['-ss', String(start), '-to', String(end), '-i', input];
-    let audioSrc = '[0:a]asetpts=PTS-STARTPTS[a0]';
+    let audioSrc = `[0:a]${aCut}asetpts=PTS-STARTPTS[a0]`;
     let idx = 1;
-    if (useVocals) { inputs.push('-ss', String(start), '-to', String(end), '-i', vocalsPath); audioSrc = `[${idx}:a]asetpts=PTS-STARTPTS[a0]`; idx += 1; }
-    if (useHook) { inputs.push('-i', hookAudio); audioSrc = `${audioSrc.replace('[a0]', '[abase]')};[${idx}:a]asetpts=PTS-STARTPTS[ahook];[abase][ahook]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=300[aduck];[aduck][ahook]amix=inputs=2:duration=first:dropout_transition=0[a0]`; idx += 1; }
+    if (useVocals) { inputs.push('-ss', String(start), '-to', String(end), '-i', vocalsPath); audioSrc = `[${idx}:a]${aCut}asetpts=PTS-STARTPTS[a0]`; idx += 1; }
+    // 후킹 보이스: 같은 출력 패드([ahook])는 한 번만 쓸 수 있으므로 asplit 으로 둘(덕킹 사이드체인·믹스)로 나눈다
+    if (useHook) { inputs.push('-i', hookAudio); audioSrc = `${audioSrc.replace('[a0]', '[abase]')};[${idx}:a]asetpts=PTS-STARTPTS,asplit[hk1][hk2];[abase][hk1]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=300[aduck];[aduck][hk2]amix=inputs=2:duration=first:dropout_transition=0[a0]`; idx += 1; }
     const fc = `[0:v]${filters.join(',')}[v0];${audioSrc};color=c=0x111111:s=${w}x${h}:d=${d}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(Number(h) / 16)}:x=(w-text_w)/2:y=(h-text_h)/2,drawbox=x=(iw-${Math.round(Number(w) * 0.4)})/2:y=ih*0.62:w=${Math.round(Number(w) * 0.4)}:h=${Math.round(Number(h) / 14)}:color=0xff0033@1:t=fill,drawtext=text='구독':fontcolor=white:fontsize=${Math.round(Number(h) / 24)}:x=(w-text_w)/2:y=h*0.62+${Math.round(Number(h) / 60)}[v1];anullsrc=r=48000:cl=stereo,atrim=0:${d},asetpts=PTS-STARTPTS[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[vo][ao]`;
     args = ['-y', ...inputs, '-filter_complex', fc, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', output];
   } else {

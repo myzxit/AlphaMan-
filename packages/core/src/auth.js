@@ -13,9 +13,18 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30일
 export const ADMIN_USER_ID = 'user-admin-hhudeu66'; // 인스턴스(서버리스)마다 같은 ID 를 갖도록 고정
 
 // 세션 토큰은 서명된 자체 포함 토큰이라 서버 인스턴스가 여러 개(서버리스)여도 어디서나 검증된다.
+// 서명 키: ALPHAMAN_SECRET 환경변수 > 저장소(settings)에 한 번 생성해 둔 무작위 키. 저장소에 공유되므로 서버리스 인스턴스끼리도 같은 키를 쓴다.
+// (예전처럼 관리자 비밀번호에서 유도한 키는 소스만 보면 누구나 토큰을 위조할 수 있어 쓰지 않는다)
+let runtimeSecret = null;
+export function setSessionSecret(secret) { runtimeSecret = secret || null; }
 function sessionSecret() {
-  return process.env.ALPHAMAN_SECRET || createHash('sha256').update(`alphaman-session:${ADMIN_ACCOUNT.password}`).digest('hex');
+  const s = process.env.ALPHAMAN_SECRET || runtimeSecret;
+  if (s) return s;
+  // 아직 저장소가 준비되지 않은 아주 짧은 구간: 프로세스 단위 임시 키 (토큰은 저장소 키가 준비되면 다시 발급된다)
+  runtimeSecret = randomBytes(32).toString('hex');
+  return runtimeSecret;
 }
+export const SESSION_SECRET_SETTING_ID = 'session-secret';
 const b64u = (buf) => Buffer.from(buf).toString('base64url');
 function sign(payload) {
   const body = b64u(JSON.stringify(payload));
@@ -61,6 +70,15 @@ export class AuthService {
   constructor(store, credits) {
     this.store = store;
     this.credits = credits;
+  }
+
+  // 저장소에 보관된 세션 서명 키를 불러오거나 처음 한 번 만든다 (ALPHAMAN_SECRET 이 있으면 그것을 쓴다)
+  ensureSecret() {
+    if (process.env.ALPHAMAN_SECRET) return 'env';
+    let rec = this.store.get('settings', SESSION_SECRET_SETTING_ID);
+    if (!rec?.value) rec = this.store.insert('settings', { id: SESSION_SECRET_SETTING_ID, value: randomBytes(32).toString('hex') });
+    setSessionSecret(rec.value);
+    return 'store';
   }
 
   seedAdmin() {
@@ -142,11 +160,26 @@ export class AuthService {
     return { ok: true, message: '관리자에게 재설정 요청을 전달했습니다. 확인 후 임시 비밀번호를 문의 답변(픽시 채팅·알림)으로 알려드립니다.' };
   }
 
-  // Google 간편 로그인: 클라이언트가 확인한 프로필(email, name, sub)을 받아 계정을 만들거나 연결한다.
-  loginWithGoogle({ email, name, sub }) {
-    email = normalizeEmail(email);
+  // Google 간편 로그인: Google Identity Services 가 발급한 ID 토큰(credential)을 Google 서버에서 검증한 뒤에만 계정을 만들거나 연결한다.
+  // 이메일만 보내는 요청은 받지 않는다 (누구나 남의 계정으로 로그인할 수 있었던 취약점). GOOGLE_CLIENT_ID 가 없으면 기능이 꺼진다.
+  async loginWithGoogle({ credential } = {}) {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) throw new ApiError(503, 'Google 로그인이 아직 설정되지 않았습니다. 관리자가 GOOGLE_CLIENT_ID 를 설정해야 합니다. 이메일/비밀번호로 로그인해주세요.');
+    if (!credential || typeof credential !== 'string' || credential.length > 4096) throw new ApiError(400, 'Google 로그인 정보(credential)가 필요합니다.');
+    let info;
+    try {
+      const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`, { signal: AbortSignal.timeout(8000) });
+      info = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(info.error_description || info.error || `HTTP ${res.status}`);
+    } catch (err) { throw new ApiError(401, `Google 로그인 정보를 확인하지 못했습니다: ${err.message}`); }
+    if (info.aud !== clientId) throw new ApiError(401, 'Google 로그인 정보가 이 서비스용이 아닙니다.');
+    if (!['accounts.google.com', 'https://accounts.google.com'].includes(info.iss)) throw new ApiError(401, 'Google 로그인 정보의 발급자가 올바르지 않습니다.');
+    if (Number(info.exp) * 1000 < Date.now()) throw new ApiError(401, 'Google 로그인 정보가 만료되었습니다. 다시 시도해주세요.');
+    if (String(info.email_verified) !== 'true') throw new ApiError(401, 'Google 계정 이메일이 인증되지 않았습니다.');
+    const email = normalizeEmail(info.email); const name = info.name || info.given_name || ''; const sub = info.sub || null;
     if (!isValidEmail(email)) throw new ApiError(400, 'Google 계정 이메일이 필요합니다.');
     let user = this.store.findOne('users', (u) => u.email === email);
+    if (user && sub && !user.googleSub) this.store.update('users', user.id, { googleSub: sub });
     if (!user) {
       user = this.store.insert('users', {
         email,

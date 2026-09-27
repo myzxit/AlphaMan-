@@ -33,8 +33,12 @@ export class CreditService {
     return Boolean(user && (user.role === 'admin' || user.unlimitedCredits));
   }
 
+  // 잔액은 원장(creditLedger, 추가만 되는 기록)의 합이 기준이다: 서버리스 인스턴스 여러 개가 같은 잔액 레코드를 덮어써도(마지막 쓰기 승리)
+  // 원장 항목은 id 가 달라 병합 시 사라지지 않으므로 지급·차감이 유실되지 않는다. 원장이 없는 옛 계정은 잔액 레코드를 쓴다.
   balance(userId) {
     if (this.isUnlimited(userId)) return Infinity;
+    const ledger = this.store.find('creditLedger', (l) => l.userId === userId);
+    if (ledger.length) return Math.max(0, Math.round(ledger.reduce((s, l) => s + (Number(l.delta) || 0), 0) * 100) / 100);
     const rec = this.store.findOne('credits', (c) => c.userId === userId);
     return rec ? Math.max(0, Math.round(rec.minutes * 100) / 100) : 0;
   }
@@ -54,8 +58,8 @@ export class CreditService {
   grant(userId, minutes, reason, meta = {}) {
     if (!(minutes > 0)) throw new ApiError(400, '지급할 이용권은 0보다 커야 합니다.');
     const rec = this._ensure(userId);
-    this.store.update('credits', rec.id, { minutes: rec.minutes + minutes });
     this.store.insert('creditLedger', { userId, delta: minutes, reason, ...meta });
+    this.store.update('credits', rec.id, { minutes: this.balance(userId) }); // 표시용 캐시
     return this.balance(userId);
   }
 
@@ -65,11 +69,12 @@ export class CreditService {
       return Infinity;
     }
     const rec = this._ensure(userId);
-    if (rec.minutes < minutes) {
-      throw new ApiError(402, `이용권이 부족합니다. 필요: ${minutes.toFixed(1)}분, 보유: ${rec.minutes.toFixed(1)}분`, { required: minutes, balance: rec.minutes });
+    const have = this.balance(userId);
+    if (have < minutes) {
+      throw new ApiError(402, `이용권이 부족합니다. 필요: ${minutes.toFixed(1)}분, 보유: ${have.toFixed(1)}분`, { required: minutes, balance: have });
     }
-    this.store.update('credits', rec.id, { minutes: rec.minutes - minutes });
     this.store.insert('creditLedger', { userId, delta: -minutes, reason, ...meta });
+    this.store.update('credits', rec.id, { minutes: this.balance(userId) });
     return this.balance(userId);
   }
 

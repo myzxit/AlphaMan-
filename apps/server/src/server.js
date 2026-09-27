@@ -71,7 +71,11 @@ export function createHttpServer(app, opts = {}) {
 export async function startServer({ port = 4100, host = '127.0.0.1', dataDir, platform = 'web', webDir } = {}) {
   const app = createApp({ dataDir, platform });
   const server = createHttpServer(app, { webDir });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
+  // 지정 포트가 사용 중이면(다른 인스턴스 등) 다음 포트를 최대 10개까지 시도한다. port 0 이면 임의 포트
+  const tryListen = (p) => new Promise((resolve, reject) => { const onErr = (err) => reject(err); server.once('error', onErr); server.listen(p, host, () => { server.off('error', onErr); resolve(); }); });
+  let bound = false; let lastErr = null;
+  for (let i = 0; i < (port ? 10 : 1) && !bound; i++) { try { await tryListen(port ? port + i : 0); bound = true; } catch (err) { lastErr = err; if (err.code !== 'EADDRINUSE') throw err; } }
+  if (!bound) throw lastErr;
   const actual = server.address().port;
   const url = `http://${host === '0.0.0.0' ? 'localhost' : host}:${actual}`;
   const backupTimer = setInterval(() => app.backup.autoBackup().catch(() => {}), 60 * 60 * 1000); if (backupTimer.unref) backupTimer.unref(); // 매시간 확인, 하루 1회 백업
@@ -89,7 +93,7 @@ function cors(res) {
 
 function bearer(req) {
   const h = req.headers.authorization || '';
-  if (h.startsWith('Bearer ')) return h.slice(7).trim();
+  if (h.startsWith('Bearer ')) { const t = h.slice(7).trim(); if (t && t !== 'null' && t !== 'undefined') return t; } // "Bearer null" 은 없는 것으로 보고 쿠키로 대체
   const cookie = req.headers.cookie || '';
   const m = cookie.match(/(?:^|;\s*)am_token=([^;]+)/);
   return m ? decodeURIComponent(m[1]) : null;
