@@ -43,7 +43,7 @@ export class AlphaMan {
     if (!memory) for (const d of [this.dataDir, this.uploadsDir, this.outputDir]) fs.mkdirSync(d, { recursive: true });
     const remote = !memory && process.env.ALPHAMAN_STORE_MODE !== 'local' ? vercelBlobRemote() : null;
     this.store = memory ? Store.memory() : new Store(path.join(this.dataDir, 'alphaman.json'), { remote });
-    this.ready = this.store.ready.then(() => { this.auth.seedAdmin(); });
+    this.ready = this.store.ready.then(() => { this.auth.ensureSecret(); this.auth.seedAdmin(); });
 
     this.credits = new CreditService(this.store);
     this.auth = new AuthService(this.store, this.credits);
@@ -102,6 +102,7 @@ export class AlphaMan {
       adminEmail: ADMIN_ACCOUNT.email,
       uploadMaxBytes: process.env.ALPHAMAN_UPLOAD_MAX_BYTES ? Number(process.env.ALPHAMAN_UPLOAD_MAX_BYTES) : (process.env.VERCEL ? 4.5 * 1024 * 1024 : 2 * 1024 * 1024 * 1024),
       serverless: Boolean(process.env.VERCEL),
+      googleClientId: process.env.GOOGLE_CLIENT_ID || null, // Google 간편 로그인(Identity Services) 공개 클라이언트 ID. 없으면 버튼이 안내만 한다
       settings: this.admin.settings(),
       content: CONTENT,
     };

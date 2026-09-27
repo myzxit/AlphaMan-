@@ -205,6 +205,7 @@ label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 4px;
 
 /* 미리보기: 원본 박힌 자막 영역(하단) 잘라내기 */
 .player-media.cropped video, .player-media.cropped iframe { height: calc(100% / (1 - var(--crop, 0))); top: 0; object-fit: cover; }
+.player-blur { position: absolute; left: 0; right: 0; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); background: rgba(0, 0, 0, .45); pointer-events: none; }
 
 /* ---- 플랫폼 공통: 접근성 · 로딩/빈/오류 상태 · 검색 · 오프라인 · 자동 저장 ---- */
 .skip-link { position: absolute; left: -999px; top: 8px; z-index: 100; background: var(--primary); color: #fff; padding: 8px 12px; border-radius: 8px; }

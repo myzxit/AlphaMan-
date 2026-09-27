@@ -70,7 +70,9 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
   let cueAudio = null; let cueActive = 0; let originalOff = muteOriginal;
   const applyMute = () => { if (media) media.mute(muted || originalOff || (duck && cueActive > 0)); };
   const stopCues = () => { if (cueAudio) { try { cueAudio.pause(); } catch { /* ignore */ } cueAudio = null; } if (window.speechSynthesis) window.speechSynthesis.cancel(); cueActive = 0; applyMute(); };
+  const exclusiveCues = Boolean(spec.audio && spec.audio.exclusiveCues); // 더빙: 다음 문장이 시작되면 이전 문장을 멈춘다
   const playCue = (c) => {
+    if (exclusiveCues && cueAudio) { try { cueAudio.pause(); } catch { /* ignore */ } cueAudio = null; cueActive = 0; }
     c.played = true; cueActive += 1; applyMute();
     const done = () => { cueActive = Math.max(0, cueActive - 1); applyMute(); };
     if (c.url) { const a = new Audio(downloadUrl(c.url)); cueAudio = a; a.onended = done; a.onerror = () => { done(); speak(c); }; a.play().catch(() => { done(); speak(c); }); }
@@ -102,9 +104,12 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
     await media.ready;
   } catch (err) { loading.textContent = err.message; loading.classList.add('error'); return { destroy() {} }; }
   loading.classList.add('hidden');
-  // 원본에 박힌 자막 제거(미리보기): 렌더 계획과 같이 화면 아래쪽을 잘라낸다
-  if (!direct && spec.cropBottom > 0) { mediaHost.classList.add('cropped'); mediaHost.style.setProperty('--crop', String(spec.cropBottom)); }
-  if (cues.length || muteOriginal) note.textContent += ` · TTS ${cues.length}개 재생${muteOriginal ? ' · 원본 소리 끔(전체 내레이션)' : duck ? ' · TTS 중 원본 소리 줄임' : ''}`;
+  // 원본에 박힌 자막 제거(미리보기): 하단 띠는 렌더 계획과 같이 잘라내고, 중앙/상단 띠는 블러 오버레이로 가린다 (실제 파일은 렌더 시 프레임 분석으로 정확히 제거)
+  const reg = !direct ? (spec.burnedRegion || (spec.cropBottom > 0 ? { y: 1 - spec.cropBottom, h: spec.cropBottom } : null)) : null;
+  if (reg && reg.y + reg.h >= 0.95) { mediaHost.classList.add('cropped'); mediaHost.style.setProperty('--crop', String(reg.h)); }
+  else if (reg) { const ov = document.createElement('div'); ov.className = 'player-blur'; ov.style.top = `${reg.y * 100}%`; ov.style.height = `${reg.h * 100}%`; ov.title = '원본 박힌 자막 영역 (렌더 시 제거)'; root.querySelector('.player-stage').insertBefore(ov, cardEl); }
+  if (reg) note.textContent += ` · 원본 자막 ${reg.detect ? '자동 감지 영역' : ''} 가림`;
+  if (cues.length || muteOriginal) note.textContent += ` · ${spec.audio?.mode === 'dub' ? `더빙 ${cues.length}문장` : `TTS ${cues.length}개 재생`}${muteOriginal ? ' · 원본 목소리 제거' : duck ? ' · TTS 중 원본 소리 줄임' : ''}`;
   if (muteOriginal) { const b = document.createElement('button'); b.className = 'btn btn-sm player-orig'; b.textContent = '원본 소리 켜기'; b.onclick = () => { originalOff = !originalOff; b.textContent = originalOff ? '원본 소리 켜기' : '원본 소리 끄기'; applyMute(); }; root.querySelector('.player-bar').appendChild(b); }
   applyMute();
 

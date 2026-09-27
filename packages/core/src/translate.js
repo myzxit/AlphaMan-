@@ -1,5 +1,6 @@
 // 클릭 한 번으로 다국어 번역: 제목/자막을 목표 언어로 번역. Claude 사용 가능 시 실제 번역, 아니면 사전 기반 대체.
 import { TRANSLATION_TARGETS } from './i18n.js';
+import { ApiError } from './errors.js';
 
 const DICT = {
   ja: [['안녕하세요', 'こんにちは'], ['오늘은', '今日は'], ['정말', '本当に'], ['중요한', '大事な'], ['이야기', '話'], ['준비했어요', '用意しました'], ['꼭', '必ず'], ['끝까지', '最後まで'], ['결과', '結果'], ['방법', '方法'], ['시간', '時間'], ['핵심', 'ポイント'], ['엄청 따뜻해서 좋고', '熱々で良いです'], ['쇼츠', 'ショート'], ['영상', '動画']],
@@ -28,7 +29,7 @@ export class TranslateService {
   targets() { return TRANSLATION_TARGETS; }
 
   async translateText(text, target, { source = 'auto' } = {}) {
-    if (!TRANSLATION_TARGETS.some((t) => t.code === target)) throw new Error(`지원하지 않는 언어: ${target}`);
+    if (!TRANSLATION_TARGETS.some((t) => t.code === target)) throw new ApiError(400, `지원하지 않는 언어입니다: ${target || '(없음)'}. 사용 가능: ${TRANSLATION_TARGETS.map((t) => t.code).join(', ')}`);
     const label = TRANSLATION_TARGETS.find((t) => t.code === target).label;
     const result = await this.ai.complete({
       system: '당신은 숏폼 영상 자막/제목 전문 번역가입니다. 원문의 뉘앙스와 길이를 유지하고, 번역문만 출력합니다.',

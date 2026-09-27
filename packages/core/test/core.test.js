@@ -292,7 +292,10 @@ test('내 목소리 TTS: 샘플 업로드 → 프로필 → 합성, 쇼츠 후�
   assert.ok(profile.sampleDurationSec >= 5);
   const tts = await a.voice.synthesize(user.id, { profileId: profile.id, text: '아직도 모르셨나요? 오늘 정리해 드릴게요.', style: 'hook' });
   assert.ok(tts.estimatedSec > 0);
-  assert.ok(['simulated', 'xtts', 'elevenlabs'].includes(tts.engine));
+  // 클론 엔진이 없으면 대체 무료 목소리(엔진은 환경에 따라 edge/google/browser)로 읽고, 어느 프로필의 합성인지 남긴다
+  assert.ok(['simulated', 'xtts', 'elevenlabs', 'edge', 'edge-tts', 'google', 'browser'].includes(tts.engine));
+  assert.equal(tts.profileId, profile.id);
+  if (!['xtts', 'elevenlabs'].includes(tts.engine)) assert.ok(tts.voiceFallback);
   assert.equal(a.voice.renders(user.id).length, 1);
   // 쇼츠 AI 후킹 보이스에 내 목소리 사용
   const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, aiHookVoice: true, voiceProfileId: profile.id } });

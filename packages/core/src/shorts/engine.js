@@ -72,10 +72,11 @@ export class ShortsEngine {
     if (!RATIOS.includes(opts.ratio)) throw new ApiError(400, `지원하지 않는 비율입니다: ${opts.ratio}`);
     const minutes = Math.max(0.5, Math.round((source.durationSec / 60) * 100) / 100);
     const job = this.store.insert('jobs', {
-      userId, kind: 'shorts', source, options: opts, minutesCharged: minutes,
+      userId, kind: 'shorts', source, options: opts, minutesCharged: minutes, lastCharged: minutes,
       status: 'queued', step: 'queued', progress: 0, log: [], clipIds: [], error: null, regenerations: 0,
     });
-    this.credits.charge(userId, minutes, `쇼츠 제작: ${source.title}`, { jobId: job.id });
+    // 이용권이 부족하면(402) 작업 레코드를 남기지 않는다 (영원히 '대기' 로 남는 고아 작업 방지)
+    try { this.credits.charge(userId, minutes, `쇼츠 제작: ${source.title}`, { jobId: job.id }); } catch (err) { this.store.remove('jobs', job.id); throw err; }
     // 작업 히스토리/진행 센터 기록 (다시 실행용 입력 포함)
     this.activity?.start(userId, { kind: 'shorts', refId: job.id, title: source.title, input: { url: source.url || null, uploadId: source.uploadId || null, options: { ...opts, transcript: undefined }, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' }, estimatedSec: Math.round(source.durationSec / 6) + 20 });
     this._schedule(job.id);
@@ -142,8 +143,8 @@ export class ShortsEngine {
     if (!cancelled) console.error('[shorts] 작업 실패', jobId, err);
     const job = this.store.update('jobs', jobId, (j) => ({ status: cancelled ? 'cancelled' : 'failed', error: err.message, log: [...j.log, { at: new Date().toISOString(), step: cancelled ? 'cancelled' : 'failed', message: err.message }] }));
     if (job) {
-      // 실패/취소 시 이용권 환불
-      this.credits.grant(job.userId, job.minutesCharged, cancelled ? '작업 취소 환불' : '작업 실패 환불', { jobId });
+      // 실패/취소 시 이용권 환불: 마지막으로 실제 차감한 만큼만 (재생성은 50% 였으므로 원래 금액을 돌려주면 이용권이 늘어난다)
+      this.credits.grant(job.userId, job.lastCharged ?? job.minutesCharged, cancelled ? '작업 취소 환불' : '작업 실패 환불', { jobId });
       this.notifications?.push(job.userId, { type: cancelled ? 'shorts.cancelled' : 'shorts.failed', title: cancelled ? '쇼츠 제작 취소' : '쇼츠 제작 실패', body: err.message, link: '#/jobs' });
     }
     this.activity?.fail('shorts', jobId, err);
@@ -338,7 +339,7 @@ export class ShortsEngine {
     this.credits.charge(userId, half, `쇼츠 재생성(50%): ${job.source.title}`, { jobId });
     this.activity?.start(userId, { kind: 'shorts', refId: jobId, title: `${job.source.title} (재생성)`, input: { url: job.source.url || null, uploadId: job.source.uploadId || null, options: { ...job.options, transcript: undefined }, transcript: job.options.transcript || null, transcriptText: job.options.transcriptText || '' } });
     for (const id of job.clipIds) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); }
-    this.store.update('jobs', jobId, { status: 'queued', step: 'queued', progress: 0, clipIds: [], error: null, cancelRequested: false, regenerations: job.regenerations + 1, log: [{ at: new Date().toISOString(), step: 'queued', message: '재생성 요청 (이용권 50% 차감)' }] });
+    this.store.update('jobs', jobId, { status: 'queued', step: 'queued', progress: 0, clipIds: [], error: null, cancelRequested: false, regenerations: job.regenerations + 1, lastCharged: half, recoveries: 0, log: [{ at: new Date().toISOString(), step: 'queued', message: '재생성 요청 (이용권 50% 차감)' }] });
     this._schedule(jobId);
     return this.store.get('jobs', jobId);
   }
@@ -364,6 +365,8 @@ export class ShortsEngine {
   deleteJob(userId, jobId) {
     const job = this.store.get('jobs', jobId);
     if (!job || job.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.');
+    // 아직 끝나지 않은 작업을 지우면 차감했던 이용권을 돌려준다
+    if (['queued', 'processing'].includes(job.status)) { this.store.update('jobs', jobId, { cancelRequested: true }); try { this.credits.grant(userId, job.lastCharged ?? job.minutesCharged, '진행 중 작업 삭제 환불', { jobId }); } catch { /* 무제한 계정 등 */ } this.activity?.fail('shorts', jobId, Object.assign(new Error('삭제됨'), { cancelled: true })); }
     for (const id of job.clipIds) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); }
     this.store.remove('jobs', jobId);
     return true;

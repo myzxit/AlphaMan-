@@ -26,8 +26,8 @@ export class LongformEngine {
     }
     const opts = { removeSilence: true, silenceThreshold: 0.7, autoSubtitles: true, chapters: true, jumpCuts: true, language: 'ko', ...options };
     const minutes = Math.round((source.durationSec / 60) * 100) / 100;
-    const job = this.store.insert('longformJobs', { userId, source, options: opts, minutesCharged: minutes, status: 'processing', progress: 10, result: null });
-    this.credits.charge(userId, minutes, `롱폼 컷편집: ${source.title}`, { jobId: job.id });
+    const job = this.store.insert('longformJobs', { userId, source, options: opts, minutesCharged: minutes, lastCharged: minutes, status: 'processing', progress: 10, result: null });
+    try { this.credits.charge(userId, minutes, `롱폼 컷편집: ${source.title}`, { jobId: job.id }); } catch (err) { this.store.remove('longformJobs', job.id); throw err; } // 402 면 고아 작업을 남기지 않는다
     this.activity?.start(userId, { kind: 'longform', refId: job.id, title: source.title, input: { url: url || null, uploadId: uploadId || null, options: { ...opts, transcript: undefined }, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' } });
     this._schedule(job.id);
     return job;
@@ -96,7 +96,11 @@ export class LongformEngine {
 
   list(userId) { return this.store.find('longformJobs', (j) => j.userId === userId && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((j) => this._recover(j)); }
   get(userId, id) { const j = this.store.get('longformJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '작업을 찾을 수 없습니다.'); return this._recover(j); }
-  remove(userId, id) { this.get(userId, id); this.library?.removeByRef('longform', id); return this.store.remove('longformJobs', id); }
+  remove(userId, id) {
+    const j = this.get(userId, id);
+    if (['queued', 'processing'].includes(j.status)) { this.store.update('longformJobs', id, { cancelRequested: true }); try { this.credits.grant(userId, j.lastCharged ?? j.minutesCharged, '진행 중 롱폼 삭제 환불', { jobId: id }); } catch { /* 무제한 계정 */ } this.activity?.fail('longform', id, Object.assign(new Error('삭제됨'), { cancelled: true })); }
+    this.library?.removeByRef('longform', id); return this.store.remove('longformJobs', id);
+  }
 }
 
 function buildTimeline(duration, cuts) {

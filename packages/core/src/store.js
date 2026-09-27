@@ -19,6 +19,7 @@ export function mergeSnapshots(a, b) {
   const out = {};
   const tombs = new Map();
   for (const t of [...(a?.tombstones || []), ...(b?.tombstones || [])]) { const k = `${t.collection}:${t.id}`; if (!tombs.has(k) || tombs.get(k).at < t.at) tombs.set(k, t); }
+  const userRemap = new Map(); // 중복 가입으로 버려진 사용자 id → 유지된 id (다른 컬렉션의 userId 를 옮겨 이용권·작업이 고아가 되지 않게)
   for (const c of COLLECTIONS) {
     if (c === 'tombstones') continue;
     const byId = new Map();
@@ -38,8 +39,11 @@ export function mergeSnapshots(a, b) {
         // 두 기록의 비밀번호가 다르면(다른 인스턴스에서 다시 가입한 경우) 나중 비밀번호도 함께 보관해 어느 쪽으로도 로그인되게 한다
         else if (u.passwordHash && u.passwordHash !== prev.passwordHash) prev.altPasswordHashes = [...new Set([...(prev.altPasswordHashes || []), ...(u.altPasswordHashes || []), u.passwordHash])].slice(-5);
         if (u.role === 'admin') prev.role = 'admin';
+        userRemap.set(u.id, prev.id);
       }
       out[c] = out[c].filter((u) => !u.email || byEmail.get(u.email) === u);
+    } else if (userRemap.size) {
+      for (const rec of out[c]) if (rec.userId && userRemap.has(rec.userId)) rec.userId = userRemap.get(rec.userId);
     }
   }
   out.tombstones = [...tombs.values()].sort((x, y) => String(x.at).localeCompare(String(y.at))).slice(-MAX_TOMBSTONES);

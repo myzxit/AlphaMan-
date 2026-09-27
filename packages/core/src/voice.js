@@ -165,7 +165,15 @@ export class VoiceService {
     return this.store.get('voiceProfiles', profile.id);
   }
 
-  rename(userId, id, name) { this.get(userId, id); return this.store.update('voiceProfiles', id, { name: String(name).slice(0, 40) }); }
+  rename(userId, id, name) { return this.update(userId, id, { name }); }
+  // 이름 · 대체 목소리(클론 엔진이 없을 때 대신 읽을 무료 목소리) 변경
+  update(userId, id, { name, fallbackVoiceId } = {}) {
+    this.get(userId, id);
+    const patch = {};
+    if (name != null && String(name).trim()) patch.name = String(name).trim().slice(0, 40);
+    if (fallbackVoiceId !== undefined) { if (fallbackVoiceId && fallbackVoiceId !== 'none' && !this.freeVoice(fallbackVoiceId)) throw new ApiError(400, '알 수 없는 목소리입니다.'); patch.fallbackVoiceId = fallbackVoiceId || null; }
+    return this.store.update('voiceProfiles', id, patch);
+  }
   remove(userId, id) { this.get(userId, id); return this.store.remove('voiceProfiles', id); }
 
   // 텍스트 → 음성. profileId(내 목소리) 또는 voiceId(무료 목소리). 결과: { audioPath|null, engine, durationSec, plan|browser }
@@ -222,7 +230,19 @@ export class VoiceService {
         return this._record(userId, { ...base, engine: 'xtts', audioPath: finalPath, durationSec: estimatedSec });
       } catch (err) { console.warn('[voice] XTTS 합성 실패, 시뮬레이션으로:', err.message); }
     }
+    // 음성 클론 엔진(ElevenLabs/XTTS)이 없으면 프로필에 지정한(또는 언어가 같은) 무료 신경망 목소리로 대신 읽어 실제 음성 파일을 만든다
+    const fb = this.fallbackVoiceFor(profile);
+    if (fb) {
+      const r = await this.synthesize(userId, { voiceId: fb.id, text: clean, style, outputName });
+      return this.store.update('voiceRenders', r.id, { profileId, voiceFallback: fb.id, voiceName: `${profile.name} → ${fb.name}`, plan: { ...(r.plan || {}), note: `내 목소리 복제 엔진(ELEVENLABS_API_KEY 또는 XTTS)이 설정되지 않아 무료 목소리 "${fb.name}" 으로 읽었습니다. 프로필의 "대체 목소리"에서 바꿀 수 있습니다.` } });
+    }
     return this._record(userId, { ...base, engine: 'simulated', audioPath: null, durationSec: estimatedSec, plan: { note: 'ELEVENLABS_API_KEY 또는 로컬 XTTS(tts CLI)를 설정하면 실제 음성 파일이 생성됩니다.', speakerSample: profile.samplePath, speed: st.speed, pitch: st.pitch } });
+  }
+
+  // 프로필의 대체 무료 목소리: 지정값 > 같은 언어의 첫 목소리 > 기본(선희)
+  fallbackVoiceFor(profile) {
+    if (profile.fallbackVoiceId === 'none') return null;
+    return this.freeVoice(profile.fallbackVoiceId) || FREE_VOICES.find((v) => (v.lang || 'ko-KR').startsWith(profile.language || 'ko')) || this.freeVoice(DEFAULT_FREE_VOICE);
   }
 
   _record(userId, data) {

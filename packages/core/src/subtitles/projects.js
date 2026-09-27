@@ -97,6 +97,7 @@ export class SubtitleProjects {
 
   mergeSegments(userId, id, segmentIds) {
     const p = this.get(userId, id);
+    if (!Array.isArray(segmentIds)) throw new ApiError(400, '합칠 자막 id 목록(segmentIds)이 필요합니다.');
     const targets = p.segments.filter((s) => segmentIds.includes(s.id));
     if (targets.length < 2) throw new ApiError(400, '두 개 이상의 자막을 선택해주세요.');
     const merged = { id: targets[0].id, start: Math.min(...targets.map((s) => s.start)), end: Math.max(...targets.map((s) => s.end)), text: targets.map((s) => s.text).join(' '), words: targets.flatMap((s) => s.words), speaker: targets[0].speaker };

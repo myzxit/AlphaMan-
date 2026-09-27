@@ -24,17 +24,29 @@ export class ShareService {
     this.store.update('shares', s.id, { views: (s.views || 0) + 1, lastViewedAt: new Date().toISOString() });
     // 공유 화면에는 원본 파일 스트림 대신 토큰 기반 스트림 URL 을 준다
     if (preview.source?.streamUrl) preview.source = { ...preview.source, streamUrl: `${preview.source.streamUrl}${preview.source.streamUrl.includes('?') ? '&' : '?'}share=${token}` };
-    if (preview.renderUrl) preview.renderUrl = `${preview.renderUrl}&share=${token}`;
-    for (const c of preview.audio?.cues || []) if (c.url) c.url = `${c.url}?share=${token}`;
+    const withToken = (u) => `${u}${u.includes('?') ? '&' : '?'}share=${token}`;
+    if (preview.renderUrl) preview.renderUrl = withToken(preview.renderUrl);
+    for (const c of preview.audio?.cues || []) if (c.url) c.url = withToken(c.url);
     return { title: s.title || preview.title, kind: s.kind, allowDownload: s.allowDownload, expiresAt: s.expiresAt, preview: { ...preview, seo: undefined, thumbnailSet: undefined } };
   }
-  // 스트림 라우트가 토큰으로 접근 권한을 확인할 때 사용
-  ownerForToken(token, { uploadId = null, renderId = null, kind = null, refId = null } = {}) {
-    const s = this.store.findOne('shares', (x) => x.token === token && !x.revokedAt && new Date(x.expiresAt).getTime() > Date.now());
+  // 공유 토큰 레코드 (유효한 것만)
+  shareForToken(token) { return this.store.findOne('shares', (x) => x.token === token && !x.revokedAt && new Date(x.expiresAt).getTime() > Date.now()) || null; }
+  // 스트림 라우트가 토큰으로 접근 권한을 확인할 때 사용: 토큰이 가리키는 그 항목(원본·렌더 파일·그 작업의 TTS)에만 접근을 허용한다
+  ownerForToken(token, { uploadId = null, renderId = null, kind = null, refId = null, libraryId = null, download = false } = {}) {
+    const s = this.shareForToken(token);
     if (!s) return null;
+    if (download && !s.allowDownload) return null;
     if (uploadId) { const col = { shorts: 'jobs', remix: 'remixJobs', longform: 'longformJobs' }[s.kind]; const rec = this.store.get(col, s.refId); const src = s.kind === 'shorts' ? this.store.get('jobs', this.store.get('clips', s.refId)?.jobId)?.source : rec?.source; if (src?.uploadId !== uploadId) return null; }
     if (kind && refId && (s.kind !== kind || s.refId !== refId)) return null;
-    if (renderId) { const r = this.store.get('voiceRenders', renderId); if (!r || r.userId !== s.userId) return null; }
+    if (libraryId) { const item = this.store.get('library', libraryId); if (!item || item.userId !== s.userId || item.kind !== s.kind || item.refId !== s.refId) return null; }
+    if (renderId) {
+      const r = this.store.get('voiceRenders', renderId); if (!r || r.userId !== s.userId) return null;
+      // 공유된 작업에 실제로 쓰인 TTS 만 (그 사용자의 다른 합성은 볼 수 없다)
+      const ids = new Set();
+      if (s.kind === 'shorts') { const clip = this.store.get('clips', s.refId); if (clip?.audio?.aiHookVoice?.renderId) ids.add(clip.audio.aiHookVoice.renderId); }
+      if (s.kind === 'remix') for (const l of this.store.get('remixJobs', s.refId)?.result?.narration?.lines || []) if (l.renderId) ids.add(l.renderId);
+      if (!ids.has(renderId)) return null;
+    }
     return s.userId;
   }
 }

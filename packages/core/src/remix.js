@@ -14,14 +14,15 @@ export const REMIX_LIMITS = Object.freeze({ minMinutes: 1, maxMinutes: 28 });
 
 export const REMIX_DEFAULTS = Object.freeze({
   targetMinutes: 5,            // 1 ~ 28
-  removeBurnedSubtitles: true, // 원본에 박힌 자막 제거 (크롭/인페인팅)
+  removeBurnedSubtitles: true, // 원본에 박힌 자막 제거 (크롭/블러)
+  subtitleRegion: 'auto',      // 박힌 자막 위치: auto(프레임 분석으로 감지) | bottom | center | top
   removeSfx: true,             // 원본 효과음 제거 (음원 분리 후 효과음 트랙 제외)
   removeBgm: true,             // 원본 배경음악 제거
-  keepOriginalVoice: true,     // 원본 목소리는 유지 (내레이션 모드에서는 false 로 두면 전체 더빙)
+  keepOriginalVoice: true,     // 원본 목소리 유지. false 면 내레이션/더빙이 원본 목소리를 대체한다 (dub 모드는 항상 대체)
   newSubtitles: true,          // 새 자막 (템플릿)
   newSfx: true,                // 새 효과음 큐
   newBgm: true,                // 새 배경음악
-  narration: 'none',           // none | intro | full  (TTS 내레이션: 내 목소리 또는 무료 목소리)
+  narration: 'none',           // none | intro | full | dub  (dub = 자막 전체를 선택한 목소리로 읽어 원본 목소리를 대체)
   voiceProfileId: null,        // 내 목소리 프로필 (없으면 voiceId 의 무료 한국어 목소리)
   voiceId: null,               // 무료 목소리 id (없으면 기본 '선희')
   outro: true,                 // 영상 마무리 구독·좋아요·알림 카드
@@ -54,7 +55,9 @@ export class RemixEngine {
     if (transcriptText && String(transcriptText).trim()) opts.transcriptText = String(transcriptText); // 붙여넣은 대본
     const target = Number(opts.targetMinutes);
     if (!(target >= REMIX_LIMITS.minMinutes && target <= REMIX_LIMITS.maxMinutes)) throw new ApiError(400, `목표 길이는 ${REMIX_LIMITS.minMinutes}~${REMIX_LIMITS.maxMinutes}분 사이여야 합니다.`);
-    if (!['none', 'intro', 'full'].includes(opts.narration)) throw new ApiError(400, '내레이션 모드가 올바르지 않습니다.');
+    if (!['none', 'intro', 'full', 'dub'].includes(opts.narration)) throw new ApiError(400, '내레이션 모드가 올바르지 않습니다.');
+    if (!['auto', 'bottom', 'center', 'top'].includes(opts.subtitleRegion)) opts.subtitleRegion = 'auto';
+    if (opts.narration === 'dub') opts.keepOriginalVoice = false; // 더빙은 원본 목소리를 대체한다
     if (!['auto', '16:9', '9:16', '1:1', '4:5'].includes(opts.ratio)) throw new ApiError(400, '지원하지 않는 비율입니다.');
     if (opts.narration !== 'none') this.voice.resolve(userId, opts); // 내 목소리 프로필이 없으면 무료 목소리로 내레이션
 
@@ -92,10 +95,10 @@ export class RemixEngine {
 
     const minutes = Math.max(0.5, Math.round((source.durationSec / 60) * 100) / 100);
     const job = this.store.insert('remixJobs', {
-      userId, source, reference, options: opts, minutesCharged: minutes, rightsConfirmedAt: new Date().toISOString(),
+      userId, source, reference, options: opts, minutesCharged: minutes, lastCharged: minutes, rightsConfirmedAt: new Date().toISOString(),
       status: 'queued', step: 'queued', progress: 0, log: [], result: null, error: null,
     });
-    this.credits.charge(userId, minutes, `AI 재구성: ${source.title}`, { jobId: job.id });
+    try { this.credits.charge(userId, minutes, `AI 재구성: ${source.title}`, { jobId: job.id }); } catch (err) { this.store.remove('remixJobs', job.id); throw err; } // 402 면 고아 작업을 남기지 않는다
     this.activity?.start(userId, { kind: 'remix', refId: job.id, title: source.title, input: { url: url || null, uploadId: uploadId || null, referenceUrl, options: { ...opts, transcript: undefined }, rightsConfirmed: true, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' }, estimatedSec: Math.round(source.durationSec / 5) + 30 });
     this._schedule(job.id);
     return job;
@@ -118,7 +121,7 @@ export class RemixEngine {
     const cancelled = Boolean(err?.cancelled);
     if (!cancelled) console.error('[remix] 작업 실패', jobId, err);
     const job = this.store.update('remixJobs', jobId, (j) => ({ status: cancelled ? 'cancelled' : 'failed', error: err.message, log: [...j.log, { at: new Date().toISOString(), step: cancelled ? 'cancelled' : 'failed', message: err.message }] }));
-    if (job) { this.credits.grant(job.userId, job.minutesCharged, cancelled ? '재구성 취소 환불' : '재구성 실패 환불', { jobId }); this.notifications?.push(job.userId, { type: cancelled ? 'remix.cancelled' : 'remix.failed', title: cancelled ? 'AI 재구성 취소' : 'AI 재구성 실패', body: err.message, link: '#/jobs' }); }
+    if (job) { this.credits.grant(job.userId, job.lastCharged ?? job.minutesCharged, cancelled ? '재구성 취소 환불' : '재구성 실패 환불', { jobId }); this.notifications?.push(job.userId, { type: cancelled ? 'remix.cancelled' : 'remix.failed', title: cancelled ? 'AI 재구성 취소' : 'AI 재구성 실패', body: err.message, link: '#/jobs' }); }
     this.activity?.fail('remix', jobId, err);
   }
 
@@ -222,7 +225,12 @@ export class RemixEngine {
 
   planCleaning(source, opts) {
     const steps = [];
-    if (opts.removeBurnedSubtitles) steps.push({ id: 'burned-subtitles', method: which('ffmpeg') ? 'crop+delogo' : 'plan', region: { x: 0, y: 0.78, w: 1, h: 0.18 }, note: '하단 자막 영역을 감지해 크롭/인페인팅으로 제거' });
+    if (opts.removeBurnedSubtitles) {
+      // 자막 위치별 제거 영역(프레임 비율). auto 는 렌더 시(브라우저/ffmpeg) 프레임을 분석해 실제 자막 띠를 찾고, 못 찾으면 하단 기본값을 쓴다
+      const region = subtitleRegionFor(opts.subtitleRegion);
+      const edge = region.y + region.h >= 0.95 || region.y <= 0.03;
+      steps.push({ id: 'burned-subtitles', method: which('ffmpeg') ? (edge ? 'crop' : 'blur') : 'browser', region, position: opts.subtitleRegion, note: `${{ auto: '자막 띠를 자동 감지해', bottom: '하단', center: '중앙', top: '상단' }[opts.subtitleRegion] || '하단'} 자막 영역을 ${edge ? '잘라내어(크롭)' : '블러로 가려'} 제거` });
+    }
     if (opts.removeSfx || opts.removeBgm) steps.push({ id: 'audio-separation', method: which('demucs') ? 'demucs' : 'plan', keep: opts.keepOriginalVoice ? ['vocals'] : [], drop: [opts.removeSfx && 'other', opts.removeBgm && 'drums', opts.removeBgm && 'bass'].filter(Boolean), note: '음원 분리 후 목소리만 남기고 효과음·배경음 트랙 제외' });
     steps.push({ id: 'normalize', method: 'loudnorm', targetLUFS: -14 });
     return { steps, engine: steps.some((s) => s.method !== 'plan') ? 'ffmpeg' : 'plan' };
@@ -304,13 +312,22 @@ export class RemixEngine {
 
     let narration = null;
     if (opts.narration !== 'none') {
-      const lines = await this.writeNarration({ plan, subtitles, mode: opts.narration, tone: styleProfile?.tone || 'friendly' });
+      // dub: 자막 전체를 문장 묶음으로 읽어 원본 목소리를 대체 / intro·full: AI 가 쓴 내레이션 문장
+      const lines = opts.narration === 'dub' ? dubLines(subtitles) : await this.writeNarration({ plan, subtitles, mode: opts.narration, tone: styleProfile?.tone || 'friendly' });
       const renders = [];
+      // 서버리스에서 중단·복구돼도 이미 합성한 문장은 다시 만들지 않는다 (작업 기록에 캐시)
+      const cache = { ...(this.store.get('remixJobs', job.id)?.narrationCache || {}) };
       for (const [i, line] of lines.entries()) {
-        const r = await this.voice.synthesize(job.userId, { profileId: opts.voiceProfileId || null, voiceId: opts.voiceId || null, text: line.text, style: i === 0 ? 'hook' : 'natural', outputName: `remix-${job.id.slice(0, 8)}-${i + 1}` });
-        renders.push({ at: line.at, text: line.text, audioPath: r.audioPath, engine: r.engine, durationSec: r.durationSec });
+        this.activity?.checkCancelled('remixJobs', job.id);
+        let r = cache[line.text] ? this.store.get('voiceRenders', cache[line.text]) : null;
+        if (!r || (r.audioPath && !fs.existsSync(r.audioPath) && !r.audioUrl)) {
+          r = await this.voice.synthesize(job.userId, { profileId: opts.voiceProfileId || null, voiceId: opts.voiceId || null, text: line.text, style: i === 0 && opts.narration !== 'dub' ? 'hook' : 'natural', outputName: `remix-${job.id.slice(0, 8)}-${i + 1}` });
+          cache[line.text] = r.id;
+          if (lines.length > 3) this.store.update('remixJobs', job.id, (j) => ({ narrationCache: cache, progress: Math.min(86, 72 + Math.round(((i + 1) / lines.length) * 14)), log: j.log })); // 진행률 갱신 (멈춤 감지 방지)
+        }
+        renders.push({ at: line.at, end: line.end ?? null, text: line.text, renderId: r.id, audioPath: r.audioPath, audioUrl: r.audioUrl || null, engine: r.engine, voiceFallback: r.voiceFallback || null, durationSec: r.durationSec });
       }
-      narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId || null, voice: this.voice.resolve(job.userId, opts), lines: renders, replacesOriginalVoice: opts.narration === 'full' && !opts.keepOriginalVoice };
+      narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId || null, voice: this.voice.resolve(job.userId, opts), lines: renders, replacesOriginalVoice: ['full', 'dub'].includes(opts.narration) && !opts.keepOriginalVoice, exclusive: opts.narration === 'dub', duckLevel: opts.keepOriginalVoice ? 0.25 : 0, withFile: renders.filter((l) => l.audioPath || l.audioUrl).length };
     }
 
     return { timeline, template: { id: template.id, name: template.name, font: template.font, position: styleProfile?.subtitlePosition || 'bottom' }, subtitles, sfx, bgm, zoom, transitions, colorGrade, narration, ratio, extended: plan.extended, stretchFactor: plan.stretchFactor, mirroredFromReference: styleProfile ? styleProfile.mirrored : [] };
@@ -340,7 +357,12 @@ export class RemixEngine {
     const dir = path.join(this.outputDir, job.userId, 'remix');
     const out = path.join(dir, `${job.id}.mp4`);
     const assPath = path.join(dir, `${job.id}.ass`);
-    const crop = cleaning.steps.find((s) => s.id === 'burned-subtitles') ? 'crop=iw:ih*0.78:0:0,' : '';
+    // 박힌 자막 제거: 가장자리(상/하단) 띠는 잘라내고, 중앙 띠는 그 영역만 블러로 가린다
+    const burned = cleaning.steps.find((s) => s.id === 'burned-subtitles');
+    const region = burned?.region || null;
+    const edgeBottom = region && region.y + region.h >= 0.95; const edgeTop = region && region.y <= 0.03;
+    const crop = !region ? '' : edgeBottom ? `crop=iw:ih*${round(region.y)}:0:0,` : edgeTop ? `crop=iw:ih*${round(1 - region.h)}:0:ih*${round(region.h)},` : '';
+    const blurBand = region && !edgeBottom && !edgeTop ? (i) => `split[s${i}a][s${i}b];[s${i}b]crop=iw:ih*${round(region.h)}:0:ih*${round(region.y)},boxblur=luma_radius=22:luma_power=2:chroma_radius=11[bl${i}];[s${i}a][bl${i}]overlay=0:main_h*${round(region.y)},` : null;
     const fit = `${crop}scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
     const parts = []; const labels = [];
     // 오디오 소스: demucs 로 분리한 목소리 트랙(효과음·배경음 제거)이 있으면 그것을, 전체 내레이션이 원본 목소리를 대체하면 무음을 쓴다
@@ -355,7 +377,7 @@ export class RemixEngine {
         parts.push(`color=c=0x14161c:s=${w}x${h}:d=${dur}:r=30,drawtext=text='${text}':fontcolor=white:fontsize=${Math.round(h / 14)}:x=(w-text_w)/2:y=(h-text_h)/2${cta}[v${i}]`, `anullsrc=r=48000:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${i}]`);
       } else {
         const speed = t.speed || 1;
-        parts.push(`[0:v]trim=${t.start}:${t.end},setpts=(PTS-STARTPTS)/${speed},${fit}[v${i}]`, srcA ? `${srcA}atrim=${t.start}:${t.end},asetpts=PTS-STARTPTS,atempo=${Math.min(2, Math.max(0.5, speed))}[a${i}]` : `anullsrc=r=48000:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${i}]`);
+        parts.push(`[0:v]trim=${t.start}:${t.end},setpts=(PTS-STARTPTS)/${speed},${blurBand ? blurBand(i) : ''}${fit}[v${i}]`, srcA ? `${srcA}atrim=${t.start}:${t.end},asetpts=PTS-STARTPTS,atempo=${Math.min(2, Math.max(0.5, speed))}[a${i}]` : `anullsrc=r=48000:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${i}]`);
       }
       labels.push(`[v${i}][a${i}]`);
     });
@@ -364,7 +386,9 @@ export class RemixEngine {
     const narrFiles = (rebuild.narration?.lines || []).filter((l) => l.audioPath && fs.existsSync(l.audioPath));
     let mixChain = '[ac]';
     narrFiles.forEach((l, i) => { inputs.push('-i', l.audioPath); parts.push(`[${inputs.length / 2 - 1}:a]adelay=${Math.round(l.at * 1000)}|${Math.round(l.at * 1000)},asetpts=PTS-STARTPTS[n${i}]`); });
-    const narrMix = narrFiles.length ? `;[ac]${narrFiles.map((_, i) => `[n${i}]`).join('')}amix=inputs=${narrFiles.length + 1}:duration=first:dropout_transition=0:weights=${['0.45', ...narrFiles.map(() => '1')].join(' ')}[amix]` : '';
+    // 원본 소리 가중치: 원본 목소리 유지면 덕킹(0.45), 유지하지 않으면 내레이션 사이에서만 작게(0.15)
+    const origWeight = rebuild.narration?.duckLevel === 0 ? '0.15' : '0.45';
+    const narrMix = narrFiles.length ? `;[ac]${narrFiles.map((_, i) => `[n${i}]`).join('')}amix=inputs=${narrFiles.length + 1}:duration=first:dropout_transition=0:weights=${[origWeight, ...narrFiles.map(() => '1')].join(' ')}[amix]` : '';
     if (narrFiles.length) mixChain = '[amix]';
     const filter = `${parts.join(';')};${labels.join('')}concat=n=${n}:v=1:a=1[vc][ac]${narrMix};[vc]subtitles='${assPath.replace(/'/g, "\\'")}'[vo];${mixChain}loudnorm=I=-14[ao]`;
     const args = ['-y', ...inputs, '-filter_complex', filter, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', out];
@@ -384,7 +408,11 @@ export class RemixEngine {
     if (!this.activity || !job || !['queued', 'processing'].includes(job.status)) return job;
     return this.activity.recoverStale('remix', 'remixJobs', job, { reschedule: (id) => this._schedule(id), onGiveUp: (id, err) => this._fail(id, err), reset: () => ({ result: null }) });
   }
-  remove(userId, id) { this.get(userId, id); this.library?.removeByRef('remix', id); return this.store.remove('remixJobs', id); }
+  remove(userId, id) {
+    const j = this.get(userId, id);
+    if (['queued', 'processing'].includes(j.status)) { this.store.update('remixJobs', id, { cancelRequested: true }); try { this.credits.grant(userId, j.lastCharged ?? j.minutesCharged, '진행 중 재구성 삭제 환불', { jobId: id }); } catch { /* 무제한 계정 */ } this.activity?.fail('remix', id, Object.assign(new Error('삭제됨'), { cancelled: true })); }
+    this.library?.removeByRef('remix', id); return this.store.remove('remixJobs', id);
+  }
 
   updateResult(userId, id, patch) {
     const j = this.get(userId, id);
@@ -405,7 +433,7 @@ export class RemixEngine {
     const half = Math.round((j.minutesCharged / 2) * 100) / 100;
     this.credits.charge(userId, half, `AI 재구성 다시 만들기(50%): ${j.source.title}`, { jobId: id });
     this.library?.removeByRef('remix', id);
-    this.store.update('remixJobs', id, { status: 'queued', step: 'queued', progress: 0, result: null, error: null, cancelRequested: false, log: [{ at: new Date().toISOString(), step: 'queued', message: '다시 만들기 (이용권 50% 차감)' }] });
+    this.store.update('remixJobs', id, { status: 'queued', step: 'queued', progress: 0, result: null, error: null, cancelRequested: false, lastCharged: half, recoveries: 0, narrationCache: {}, log: [{ at: new Date().toISOString(), step: 'queued', message: '다시 만들기 (이용권 50% 차감)' }] });
     this.activity?.start(userId, { kind: 'remix', refId: id, title: `${j.source.title} (다시 만들기)`, input: { url: j.source.url || null, uploadId: j.source.uploadId || null, referenceUrl: j.reference?.url || null, options: { ...j.options, transcript: undefined }, rightsConfirmed: true, transcript: j.options.transcript || null, transcriptText: j.options.transcriptText || '' } });
     this._schedule(id);
     return this.store.get('remixJobs', id);
@@ -470,4 +498,24 @@ function mergeAdjacent(keep) {
   const out = [];
   for (const k of keep) { const last = out[out.length - 1]; if (last && k.start - last.end < 0.5) { last.end = Math.max(last.end, k.end); } else out.push({ ...k }); }
   return out;
+}
+
+// 박힨 자막 위치 → 제거 영역(프레임 비율). auto 는 하단 기본값 + detect 플래그 (렌더 시 프레임 분석으로 실제 띠를 찾는다)
+export function subtitleRegionFor(position = 'auto') {
+  if (position === 'center') return { x: 0, y: 0.4, w: 1, h: 0.22, detect: false };
+  if (position === 'top') return { x: 0, y: 0, w: 1, h: 0.18, detect: false };
+  return { x: 0, y: 0.78, w: 1, h: 0.22, detect: position === 'auto' };
+}
+
+// 더빙: 자막(카드 제외)을 문장 묶음으로 합쳐 TTS 한 번에 읽을 단위를 만든다 (묶음당 최대 220자·15초, 1.2초 이상 끊기면 새 묶음)
+export function dubLines(subtitles, { maxChars = 220, maxSec = 15, gapSec = 1.2 } = {}) {
+  const lines = [];
+  let cur = null;
+  for (const s of (subtitles || []).filter((x) => !x.card && String(x.text || '').trim())) {
+    const text = String(s.text).trim();
+    if (cur && s.start - cur.end <= gapSec && cur.text.length + text.length + 1 <= maxChars && s.end - cur.at <= maxSec) { cur.text += ` ${text}`; cur.end = s.end; continue; }
+    cur = { at: round(s.start), end: round(s.end), text };
+    lines.push(cur);
+  }
+  return lines;
 }

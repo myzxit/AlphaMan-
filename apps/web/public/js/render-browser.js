@@ -38,21 +38,29 @@ export async function renderInBrowser(spec, { onProgress = () => {}, onPreview =
   const video = document.createElement('video'); video.playsInline = true; video.preload = 'auto'; video.crossOrigin = 'anonymous'; video.src = authed(spec.source.streamUrl);
   await new Promise((res, rej) => { video.onloadedmetadata = () => res(); video.onerror = () => rej(new Error('원본 영상을 불러오지 못했습니다. 파일이 서버에 남아 있는지 확인해주세요.')); });
   const vw = video.videoWidth || 1280; const vh = video.videoHeight || 720;
-  const crop = Math.max(0, Math.min(0.4, spec.cropBottom || 0));
-  const srcH = vh * (1 - crop);
+  // 원본에 박힌 자막 제거 영역: 서버가 준 영역(하단/중앙/상단) 또는 프레임 분석으로 자동 감지. 가장자리 띠는 잘라내고(크롭) 중앙 띠는 블러로 가린다
+  let region = spec.burnedRegion ? { ...spec.burnedRegion } : (spec.cropBottom > 0 ? { x: 0, y: 1 - spec.cropBottom, w: 1, h: spec.cropBottom, detect: false } : null);
+  if (region?.detect) { onProgress(0, 0, '원본 자막 위치 분석 중...'); const found = await detectSubtitleBand(video, items, { vw, vh, signal }); if (found) region = { ...found, detect: false, detected: true }; }
+  const cropBottom = region && region.y + region.h >= 0.95 ? Math.max(0, Math.min(0.4, region.h)) : 0;
+  const cropTop = region && !cropBottom && region.y <= 0.03 ? Math.max(0, Math.min(0.4, region.h)) : 0;
+  const blurBand = region && !cropBottom && !cropTop ? region : null;
+  const srcY = vh * cropTop; const srcH = vh * (1 - cropBottom - cropTop);
   // cover-fit
   const scale = Math.max(W / vw, H / srcH); const dw = vw * scale; const dh = srcH * scale; const dx = (W - dw) / 2; const dy = (H - dh) / 2;
 
-  // 오디오 그래프: 원본(덕킹) + TTS 큐 → 녹화 스트림
+  // 오디오 그래프: 원본(덕킹/음소거) + TTS 큐 → 녹화 스트림
   const AC = window.AudioContext || window.webkitAudioContext; const ctx = new AC();
   const dest = ctx.createMediaStreamDestination();
   const srcNode = ctx.createMediaElementSource(video); const origGain = ctx.createGain(); srcNode.connect(origGain).connect(dest);
   const muteOriginal = Boolean(spec.audio?.muteOriginal); origGain.gain.value = muteOriginal ? 0 : 1;
+  const duckLevel = spec.audio?.duckLevel != null ? Math.max(0, Math.min(1, Number(spec.audio.duckLevel))) : 0.25;
+  const exclusiveCues = Boolean(spec.audio?.exclusiveCues); // 더빙: 다음 문장이 시작되면 이전 문장을 멈춘다
   const cues = [];
   for (const c of spec.audio?.cues || []) {
     if (!c.url) continue;
     try { const buf = await (await fetch(authed(c.url), { headers: { Authorization: `Bearer ${getToken()}` } })).arrayBuffer(); cues.push({ at: c.at, buffer: await ctx.decodeAudioData(buf) }); } catch { /* 파일 없는 큐는 건너뜀 */ }
   }
+  cues.sort((a, b) => a.at - b.at);
   const skippedCues = (spec.audio?.cues || []).filter((c) => !c.url).length;
 
   // 캔버스 + 녹화
@@ -75,7 +83,15 @@ export async function renderInBrowser(spec, { onProgress = () => {}, onPreview =
       if (it.cta) { drawText(it.title || '구독 · 좋아요 · 알림 설정', W / 2, H * 0.4, Math.round(H / 16)); g.fillStyle = '#ff0033'; roundRect(g, W * 0.3, H * 0.55, W * 0.4, H / 12, H / 40); g.fill(); drawText(`▶ 구독${it.channel ? ` · ${it.channel}` : ''}`, W / 2, H * 0.55 + H / 24, Math.round(H / 26), { stroke: 'rgba(0,0,0,0)' }); drawText('👍 좋아요   🔔 알림 설정   💬 댓글', W / 2, H * 0.72, Math.round(H / 34), { weight: 700, stroke: 'rgba(0,0,0,0)', fontFamily: 'Noto Sans KR' }); }
       else { drawText(it.title || '', W / 2, H / 2, Math.round(H / 14)); if (it.section) drawText(it.section, W / 2, H / 2 + H / 10, Math.round(H / 30), { weight: 700 }); }
     } else {
-      try { g.drawImage(video, 0, 0, vw, srcH, dx, dy, dw, dh); } catch { /* 첫 프레임 전 */ }
+      try {
+        g.drawImage(video, 0, srcY, vw, srcH, dx, dy, dw, dh);
+        if (blurBand) { // 중앙 자막 띠: 같은 영역을 블러+어둡게 덧그려 글자를 가린다
+          const by = dy + (vh * blurBand.y - srcY) * scale; const bh = vh * blurBand.h * scale;
+          g.save(); g.beginPath(); g.rect(dx, by, dw, bh); g.clip();
+          try { g.filter = 'blur(14px)'; g.drawImage(video, 0, vh * blurBand.y, vw, vh * blurBand.h, dx - 20, by - 20, dw + 40, bh + 40); g.filter = 'none'; } catch { /* filter 미지원 */ }
+          g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(dx, by, dw, bh); g.restore();
+        }
+      } catch { /* 첫 프레임 전 */ }
       if (it && it.kind === 'replay') drawText('↻ 리플레이', W - W * 0.02, H * 0.06, Math.round(H / 36), { align: 'right', weight: 800 });
       if (it && it.kind === 'slowmo') drawText('🐢 슬로모션', W - W * 0.02, H * 0.06, Math.round(H / 36), { align: 'right', weight: 800 });
     }
@@ -87,7 +103,17 @@ export async function renderInBrowser(spec, { onProgress = () => {}, onPreview =
   // 타임라인 재생 + 녹화 루프
   let stopped = false; let cur = -1; let outT = 0; let cardStart = 0;
   const seek = (t) => new Promise((res) => { const done = () => { video.removeEventListener('seeked', done); res(); }; video.addEventListener('seeked', done); video.currentTime = Math.max(0, Math.min(video.duration || t, t)); });
-  const scheduleCues = (fromOut) => { const now = ctx.currentTime; for (const c of cues) { if (c.at < fromOut - 0.2 || c.scheduled) continue; const src = ctx.createBufferSource(); src.buffer = c.buffer; const gn = ctx.createGain(); src.connect(gn).connect(dest); const when = now + (c.at - fromOut) / 1; src.start(Math.max(now, when)); c.scheduled = true; if (!muteOriginal) { const s0 = Math.max(now, when); origGain.gain.setValueAtTime(1, s0); origGain.gain.linearRampToValueAtTime(0.25, s0 + 0.15); origGain.gain.setValueAtTime(0.25, s0 + c.buffer.duration); origGain.gain.linearRampToValueAtTime(1, s0 + c.buffer.duration + 0.3); } } };
+  // TTS 큐는 출력 시간(outT)이 시점에 도달할 때 그때그때 시작한다 (탐색 지연이 쌓여도 시점이 어긋나지 않는다)
+  let activeCue = null;
+  const startCue = (c) => {
+    c.scheduled = true;
+    if (exclusiveCues && activeCue) { try { activeCue.src.stop(); } catch { /* 이미 끝남 */ } }
+    const src = ctx.createBufferSource(); src.buffer = c.buffer; const gn = ctx.createGain(); src.connect(gn).connect(dest); src.start();
+    const now = ctx.currentTime; activeCue = { src, until: now + c.buffer.duration };
+    src.onended = () => { if (activeCue?.src === src) activeCue = null; if (!muteOriginal) { const t = ctx.currentTime; origGain.gain.cancelScheduledValues(t); origGain.gain.setValueAtTime(origGain.gain.value, t); origGain.gain.linearRampToValueAtTime(1, t + 0.3); } };
+    if (!muteOriginal) { origGain.gain.cancelScheduledValues(now); origGain.gain.setValueAtTime(origGain.gain.value, now); origGain.gain.linearRampToValueAtTime(duckLevel, now + 0.15); }
+  };
+  const scheduleCues = (fromOut) => { for (const c of cues) if (!c.scheduled && fromOut >= c.at - 0.03 && fromOut < c.at + 2) startCue(c); else if (!c.scheduled && fromOut >= c.at + 2) c.scheduled = true; };
   await ctx.resume();
   rec.start(1000);
   const startedAt = performance.now();
@@ -106,6 +132,7 @@ export async function renderInBrowser(spec, { onProgress = () => {}, onPreview =
         if (it.kind === 'card') { outT = it.newStart + (performance.now() - cardStart) / 1000; if (outT >= it.newEnd) { if (cur + 1 < items.length) { enter(cur + 1); } else { stopped = true; } } }
         else { const mt = video.currentTime; outT = it.newStart + (mt - it.start) / (it.speed || 1); if (video.ended || mt >= it.end - 0.04 || outT >= it.newEnd) { if (cur + 1 < items.length) { outT = it.newEnd; enter(cur + 1); } else { stopped = true; } } }
       }
+      scheduleCues(outT);
       drawFrame(Math.min(total, outT), it);
       onProgress(Math.min(1, outT / total), outT);
       if (stopped) { drawFrame(total, it); return resolve(); }
@@ -118,7 +145,50 @@ export async function renderInBrowser(spec, { onProgress = () => {}, onPreview =
   try { srcNode.disconnect(); ctx.close(); } catch { /* ignore */ }
   video.removeAttribute('src'); video.load();
   const blob = new Blob(chunks, { type: mime.split(';')[0] });
-  return { blob, mime: mime.split(';')[0], ext, durationSec: total, elapsedSec: Math.round((performance.now() - startedAt) / 1000), skippedCues };
+  return { blob, mime: mime.split(';')[0], ext, durationSec: total, elapsedSec: Math.round((performance.now() - startedAt) / 1000), skippedCues, region, mutedOriginal: muteOriginal, cuesMixed: cues.length };
+}
+
+// 원본에 박힌 자막 띠 자동 감지: 타임라인 곳곳의 프레임을 작게 그려 "밝은 글자 + 어두운 외곽선" 이 가로로 몰린 행을 찾는다.
+// 여러 프레임에서 꾸준히 나타나는 행 묶음(높이 6% 이상)을 자막 띠로 본다. 못 찾으면 null (호출자가 기본 영역 사용)
+export async function detectSubtitleBand(video, items, { vw, vh, signal = null, samples = 10 } = {}) {
+  const srcItems = items.filter((it) => it.kind !== 'card' && it.end > it.start);
+  if (!srcItems.length || !video.duration) return null;
+  const w = 160; const h = Math.max(60, Math.round(160 * vh / vw)); const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true });
+  const rowHits = new Float32Array(h); let frames = 0;
+  const seekTo = (t) => new Promise((res) => { const done = () => { video.removeEventListener('seeked', done); res(); }; video.addEventListener('seeked', done); video.currentTime = Math.max(0, Math.min(video.duration - 0.05, t)); setTimeout(res, 1500); });
+  const span = srcItems.reduce((s, it) => s + (it.end - it.start), 0);
+  for (let i = 0; i < samples; i++) {
+    if (signal?.aborted) return null;
+    let off = span * ((i + 0.5) / samples); let t = srcItems[0].start;
+    for (const it of srcItems) { const len = it.end - it.start; if (off <= len) { t = it.start + off; break; } off -= len; }
+    await seekTo(t);
+    try { g.drawImage(video, 0, 0, w, h); } catch { continue; }
+    const d = g.getImageData(0, 0, w, h).data; frames += 1;
+    for (let y = 1; y < h - 1; y++) {
+      let n = 0;
+      for (let x = 1; x < w - 1; x++) {
+        const p = (y * w + x) * 4; const lum = (d[p] * 0.3 + d[p + 1] * 0.59 + d[p + 2] * 0.11);
+        if (lum < 190) continue;
+        // 밝은 픽셀 주변(상하좌우)에 어두운 픽셀이 있으면 글자 외곽선으로 본다
+        const q = [p - 4, p + 4, p - w * 4, p + w * 4].some((k) => (d[k] * 0.3 + d[k + 1] * 0.59 + d[k + 2] * 0.11) < 70);
+        if (q) n += 1;
+      }
+      rowHits[y] += n / w;
+    }
+  }
+  if (!frames) return null;
+  const avg = Array.from(rowHits, (v) => v / frames); const max = Math.max(...avg);
+  if (max < 0.06) return null; // 글자 외곽선 특징이 거의 없음 → 박힌 자막 없음
+  const thr = max * 0.35; let best = null; let start = -1;
+  for (let y = 0; y <= h; y++) {
+    const on = y < h && avg[y] >= thr;
+    if (on && start < 0) start = y;
+    if (!on && start >= 0) { const score = avg.slice(start, y).reduce((a, b) => a + b, 0); if (!best || score > best.score) best = { start, end: y, score }; start = -1; }
+  }
+  if (!best) return null;
+  const pad = Math.round(h * 0.03); const y0 = Math.max(0, best.start - pad) / h; const y1 = Math.min(h, best.end + pad) / h;
+  if (y1 - y0 < 0.05) return null;
+  return { x: 0, y: Math.round(y0 * 100) / 100, w: 1, h: Math.max(0.08, Math.round((y1 - y0) * 100) / 100) };
 }
 
 function wrapText(text, maxWidth, g) { const words = String(text || '').split(/\s+/); const lines = []; let cur = ''; for (const w of words) { const test = cur ? `${cur} ${w}` : w; if (g.measureText(test).width > maxWidth && cur) { lines.push(cur); cur = w; } else cur = test; } if (cur) lines.push(cur); return lines.slice(0, 3); }
@@ -147,7 +217,9 @@ export async function openRenderDialog({ kind, refId, libraryId = null, title = 
   if (!sup.ok) { modal(`<p>${esc(sup.reason)}</p>${spec.source?.type === 'youtube' && !desktop ? '<div class="row"><a class="btn btn-primary" href="#/download">PC 프로그램 받기</a><a class="btn" href="#/guide">렌더링 안내</a></div>' : ''}`, { title: '브라우저 렌더링' }); return null; }
   if (!libraryId) { try { const { items } = await get(`/api/library?kind=${kind}`); libraryId = items.find((it) => it.refId === refId)?.id || null; } catch { /* ignore */ } }
   const cuesNoFile = (spec.audio?.cues || []).filter((c) => !c.url).length;
-  const m = modal(`<p class="small muted">원본 파일을 재생하며 자막·후킹·구독 카드${spec.cropBottom ? ' · 원본 박힌 자막 제거(하단 크롭)' : ''}${(spec.audio?.cues || []).length ? ' · 내레이션(TTS) 믹싱' : ''}을 그려 실제 영상 파일로 녹화합니다. 영상 길이(${fmtTime(spec.durationSec)})만큼 걸리며, <b>이 탭을 화면에 유지</b>해야 합니다.</p>
+  const reg = spec.burnedRegion; const regLabel = reg ? (reg.detect ? '원본 박힌 자막 자동 감지 후 제거' : reg.y + reg.h >= 0.95 ? '원본 박힌 자막 제거(하단 크롭)' : reg.y <= 0.03 ? '원본 박힌 자막 제거(상단 크롭)' : '원본 박힌 자막 제거(중앙 블러)') : (spec.cropBottom ? '원본 박힌 자막 제거(하단 크롭)' : '');
+  const audioLabel = spec.audio?.mode === 'dub' ? `전체 더빙(${(spec.audio.cues || []).length}문장) · 원본 목소리 제거` : (spec.audio?.cues || []).length ? `내레이션(TTS ${(spec.audio.cues || []).length}개) 믹싱${spec.audio?.muteOriginal ? ' · 원본 소리 끔' : ''}` : '';
+  const m = modal(`<p class="small muted">원본 파일을 재생하며 새 자막·후킹·구독 카드${regLabel ? ` · ${regLabel}` : ''}${audioLabel ? ` · ${audioLabel}` : ''}을 그려 실제 영상 파일로 녹화합니다. 영상 길이(${fmtTime(spec.durationSec)})만큼 걸리며, <b>이 탭을 화면에 유지</b>해야 합니다.</p>
     ${cuesNoFile ? `<p class="tiny" style="color:var(--warn)">TTS ${cuesNoFile}개는 음성 파일이 없어(브라우저 음성) 녹화에 포함되지 않습니다.</p>` : ''}
     <div class="row" style="margin-bottom:8px"><label class="check"><input type="radio" name="rq" value="hd" checked/> HD (720p · 빠름)</label><label class="check"><input type="radio" name="rq" value="fhd"/> Full HD (1080p)</label></div>
     <div class="render-preview"><canvas id="rd-canvas" style="width:100%;max-height:50vh;background:#000;border-radius:10px;object-fit:contain"></canvas></div>
@@ -160,9 +232,9 @@ export async function openRenderDialog({ kind, refId, libraryId = null, title = 
     $('#rd-start').disabled = true; $('#rd-cancel').classList.remove('hidden');
     const quality = m.el.querySelector('input[name=rq]:checked').value;
     try {
-      const out = await renderInBrowser(spec, { quality, signal: ctrl.signal, onPreview: (canvas) => { const view = $('#rd-canvas'); const vg = view.getContext('2d'); view.width = canvas.width; view.height = canvas.height; const copy = () => { if (ctrl.signal.aborted || !document.body.contains(view)) return; vg.drawImage(canvas, 0, 0); requestAnimationFrame(copy); }; copy(); }, onProgress: (p, t) => { $('#rd-bar').style.width = `${Math.round(p * 100)}%`; $('#rd-status').textContent = `녹화 중 ${fmtTime(t)} / ${fmtTime(spec.durationSec)} (${Math.round(p * 100)}%)`; } });
+      const out = await renderInBrowser(spec, { quality, signal: ctrl.signal, onPreview: (canvas) => { const view = $('#rd-canvas'); const vg = view.getContext('2d'); view.width = canvas.width; view.height = canvas.height; const copy = () => { if (ctrl.signal.aborted || !document.body.contains(view)) return; vg.drawImage(canvas, 0, 0); requestAnimationFrame(copy); }; copy(); }, onProgress: (p, t, label) => { $('#rd-bar').style.width = `${Math.round(p * 100)}%`; $('#rd-status').textContent = label || `녹화 중 ${fmtTime(t)} / ${fmtTime(spec.durationSec)} (${Math.round(p * 100)}%)`; } });
       $('#rd-cancel').classList.add('hidden'); $('#rd-bar').style.width = '100%';
-      $('#rd-status').textContent = `완료 · ${out.ext.toUpperCase()} ${fmtBytes(out.blob.size)} · ${out.elapsedSec}초 소요${out.skippedCues ? ` · TTS ${out.skippedCues}개 제외` : ''}`;
+      $('#rd-status').textContent = `완료 · ${out.ext.toUpperCase()} ${fmtBytes(out.blob.size)} · ${out.elapsedSec}초 소요${out.region ? ` · 자막 영역 ${out.region.detected ? '자동 감지' : '지정'} (${Math.round(out.region.y * 100)}~${Math.round((out.region.y + out.region.h) * 100)}%)` : ''}${out.cuesMixed ? ` · TTS ${out.cuesMixed}개 믹싱` : ''}${out.mutedOriginal ? ' · 원본 목소리 제거' : ''}${out.skippedCues ? ` · TTS ${out.skippedCues}개 제외` : ''}`;
       const url = URL.createObjectURL(out.blob); const dl = $('#rd-download'); dl.href = url; dl.download = `${(title || spec.title || 'alphaman').replace(/[\\/:*?"<>|]+/g, '_')}.${out.ext}`; dl.classList.remove('hidden');
       if (libraryId) { const sv = $('#rd-save'); sv.classList.remove('hidden'); sv.onclick = async () => { sv.disabled = true; try { await uploadRender(libraryId, out.blob, out.mime, { onProgress: (p) => { sv.textContent = `업로드 ${Math.round(p * 100)}%`; } }); sv.textContent = '보관함에 저장됨'; toast('보관함에 저장했습니다. 미리보기가 렌더된 파일로 재생됩니다.'); window.dispatchEvent(new CustomEvent('am:rendered', { detail: { kind, refId, libraryId } })); } catch (err) { toast(err.message, 'error', 6000); sv.disabled = false; sv.textContent = '보관함에 저장'; } }; }
       if (window.alphaman?.notify) window.alphaman.notify('렌더링 완료', `${title || spec.title || ''} (${out.ext.toUpperCase()})`);
