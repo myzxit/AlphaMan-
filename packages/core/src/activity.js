@@ -22,6 +22,17 @@ export class JobQueue {
     this.onChange && this.onChange(this.stats());
   }
   _remember(t) { this.history.unshift(t); if (this.history.length > 200) this.history.length = 200; }
+  has(pred) { return [...this.running.values()].some((t) => pred(t.meta)) || this.waiting.some((w) => pred(w.ticket.meta)); }
+  get busy() { return this.running.size > 0 || this.waiting.length > 0; }
+  // 큐가 빌 때까지(최대 maxMs) 기다린다. 서버리스는 응답 뒤 함수가 동결되므로, 진행 중인 작업이 끝날 때까지 함수를 살려두는 데 쓴다
+  idle(maxMs = 50_000) {
+    if (!this.busy) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const check = () => { if (!this.busy) return resolve(true); if (Date.now() - started >= maxMs) return resolve(false); setTimeout(check, 100); };
+      check();
+    });
+  }
   stats() { return { concurrency: this.concurrency, running: [...this.running.values()].map((t) => ({ id: t.id, meta: t.meta, startedAt: t.startedAt })), queued: this.waiting.map((w) => ({ id: w.ticket.id, meta: w.ticket.meta, queuedAt: w.ticket.queuedAt })), recent: this.history.slice(0, 20) }; }
 }
 
@@ -84,6 +95,26 @@ export class ActivityService {
 
   // 엔진 훅: 취소 확인
   checkCancelled(col, refId) { const rec = this.store.get(col, refId); if (rec?.cancelRequested) throw new CancelledError(); }
+
+  // 멈춘 작업 복구: 다른 인스턴스(서버리스)가 동결·재시작되어 '처리 중' 인 채 남은 작업을 조회 시점에 다시 돌린다.
+  // 이 인스턴스 큐에 있으면 정상 진행 중이므로 건드리지 않는다. 두 번 복구해도 안 끝나면 실패 처리(환불)한다.
+  recoverStale(kind, col, job, { staleMs = 45_000, reschedule, onGiveUp = null, reset = null } = {}) {
+    if (!job || !['queued', 'processing'].includes(job.status)) return job;
+    if (this.queue.has((m) => m.kind === kind && m.refId === job.id)) return job;
+    const age = Date.now() - new Date(job.updatedAt || job.createdAt).getTime();
+    if (!(age >= staleMs)) return job;
+    const recoveries = (job.recoveries || 0) + 1;
+    if (recoveries > 2) {
+      const err = new Error('서버가 재시작되어 작업이 반복 중단되었습니다. 이용권은 환불되었으니 다시 실행해 주세요.');
+      onGiveUp ? onGiveUp(job.id, err) : this.store.update(col, job.id, { status: 'failed', error: err.message });
+      return this.store.get(col, job.id);
+    }
+    const patch = { recoveries, ...(reset ? reset(job) : {}) };
+    if (Array.isArray(job.log)) patch.log = [...job.log, { at: new Date().toISOString(), step: 'recover', message: `서버가 재시작되어 작업을 다시 진행합니다 (${recoveries}회)` }];
+    const updated = this.store.update(col, job.id, patch);
+    reschedule(job.id);
+    return updated;
+  }
 }
 
 function summarize(result) {

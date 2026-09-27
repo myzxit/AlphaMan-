@@ -379,3 +379,38 @@ test('브라우저 렌더 결과 저장: 조각 업로드 → 합쳐서 보관�
   assert.ok(!/href="\/api\//.test(svg), '외부 URL 참조가 남지 않는다');
   a.close();
 });
+
+test('멈춘 작업 복구: 다른 인스턴스에서 처리 중인 채 오래된 쇼츠/재구성/롱폼 작업은 조회 시 다시 돌아가고, 큐가 빌 때까지 idle() 로 기다릴 수 있다', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'stale@test.com', password: 'secret1', name: 'S' });
+  const job = await a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120, clipCount: 1 }, transcriptText: SRT });
+  assert.ok(a.activity.queue.busy);
+  assert.equal(await a.activity.queue.idle(8000), true);
+  assert.equal(a.shorts.getJob(user.id, job.id).status, 'done');
+  const oldClips = a.shorts.getJob(user.id, job.id).clipIds;
+  // 다른 인스턴스가 동결된 상황 재현: 처리 중 + 오래된 updatedAt + 이 인스턴스 큐에는 없음
+  a.store.update('jobs', job.id, { status: 'processing', step: 'editing' });
+  a.store.get('jobs', job.id).updatedAt = new Date(Date.now() - 120_000).toISOString();
+  const seen = a.shorts.getJob(user.id, job.id);
+  assert.equal(seen.recoveries, 1);
+  assert.ok(seen.log.some((l) => l.step === 'recover'));
+  await a.activity.queue.idle(8000);
+  const done = a.shorts.getJob(user.id, job.id);
+  assert.equal(done.status, 'done');
+  assert.equal(done.clips.length, 1);
+  assert.ok(!oldClips.includes(done.clipIds[0]), '이전 클립은 정리되고 새 클립이 만들어진다');
+  // 최근에 갱신된 작업(다른 인스턴스가 정상 진행 중)은 건드리지 않는다
+  a.store.update('jobs', job.id, { status: 'processing' });
+  assert.equal(a.shorts.getJob(user.id, job.id).recoveries, 1);
+  a.store.update('jobs', job.id, { status: 'done' });
+  // 두 번 복구해도 안 끝나면 실패 + 환불
+  const lf = await a.longform.create(user.id, { url: 'https://youtu.be/abcdefghijk', transcriptText: SRT });
+  await a.activity.queue.idle(8000);
+  const before = a.credits.balance(user.id);
+  a.store.update('longformJobs', lf.id, { status: 'processing', recoveries: 2 });
+  a.store.get('longformJobs', lf.id).updatedAt = new Date(Date.now() - 120_000).toISOString();
+  const failed = a.longform.get(user.id, lf.id);
+  assert.equal(failed.status, 'failed');
+  assert.ok(/재시작/.test(failed.error));
+  assert.ok(a.credits.balance(user.id) > before || a.credits.balance(user.id) === Infinity);
+});

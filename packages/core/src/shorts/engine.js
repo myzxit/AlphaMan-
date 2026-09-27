@@ -287,12 +287,23 @@ export class ShortsEngine {
 
   // 6) 결과 조회/편집/재생성/내보내기 ---------------------------------------------
   listJobs(userId) {
-    return this.store.find('jobs', (j) => j.userId === userId && j.kind === 'shorts' && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.store.find('jobs', (j) => j.userId === userId && j.kind === 'shorts' && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((j) => this._recover(j));
+  }
+
+  // 서버리스 동결 등으로 멈춘 작업은 조회 시 처음부터 다시 돌린다 (이전에 만들던 클립은 정리)
+  _recover(job) {
+    if (!this.activity || !job || !['queued', 'processing'].includes(job.status)) return job;
+    return this.activity.recoverStale('shorts', 'jobs', job, {
+      reschedule: (id) => this._schedule(id),
+      onGiveUp: (id, err) => this._fail(id, err),
+      reset: (j) => { for (const id of j.clipIds || []) { this.store.remove('clips', id); this.library?.removeByRef('shorts', id); } return { clipIds: [] }; },
+    });
   }
 
   getJob(userId, jobId, { admin = false } = {}) {
-    const job = this.store.get('jobs', jobId);
+    let job = this.store.get('jobs', jobId);
     if (!job || (!admin && job.userId !== userId)) throw new ApiError(404, '작업을 찾을 수 없습니다.');
+    job = this._recover(job);
     return { ...job, clips: job.clipIds.map((id) => this.store.get('clips', id)).filter(Boolean) };
   }
 

@@ -377,8 +377,13 @@ export class RemixEngine {
   }
 
   // ---- 조회/편집/삭제 ----
-  list(userId) { return this.store.find('remixJobs', (j) => j.userId === userId && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
-  get(userId, id) { const j = this.store.get('remixJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '재구성 작업을 찾을 수 없습니다.'); return j; }
+  list(userId) { return this.store.find('remixJobs', (j) => j.userId === userId && !j.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((j) => this._recover(j)); }
+  get(userId, id) { const j = this.store.get('remixJobs', id); if (!j || j.userId !== userId) throw new ApiError(404, '재구성 작업을 찾을 수 없습니다.'); return this._recover(j); }
+  // 서버리스 동결 등으로 멈춘 작업은 조회 시 다시 돌린다
+  _recover(job) {
+    if (!this.activity || !job || !['queued', 'processing'].includes(job.status)) return job;
+    return this.activity.recoverStale('remix', 'remixJobs', job, { reschedule: (id) => this._schedule(id), onGiveUp: (id, err) => this._fail(id, err), reset: () => ({ result: null }) });
+  }
   remove(userId, id) { this.get(userId, id); this.library?.removeByRef('remix', id); return this.store.remove('remixJobs', id); }
 
   updateResult(userId, id, patch) {
