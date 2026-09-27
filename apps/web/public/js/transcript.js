@@ -54,10 +54,11 @@ export function transcriptPanel(prefix, { info = null } = {}) {
     <div class="row row-between"><b>📝 원본 대본 (자막을 원본과 똑같이)</b><span class="badge badge-soft" id="${prefix}-tp-state">대본 없음</span></div>
     <div class="tiny muted" id="${prefix}-tp-status" style="margin-top:4px">파일을 올리면 브라우저에서 Whisper 로 원본 음성을 그대로 받아 적습니다 (처음 한 번 모델 다운로드). 유튜브 링크는 영상의 자막(자동 생성 포함)을 자동으로 가져오고, 자막이 없는 영상만 대본을 붙여넣으면 됩니다.</div>
     <div class="progress hidden" id="${prefix}-tp-bar-wrap" style="margin-top:6px"><div id="${prefix}-tp-bar" style="width:0"></div></div>
+    <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button class="btn btn-sm" id="${prefix}-tp-fetch" title="유튜브 링크의 자막(자동 생성 포함)을 가져옵니다">🔗 링크 자막 가져오기</button><button class="btn btn-sm btn-primary" id="${prefix}-tp-rewrite" title="원본 대본의 뜻은 그대로 두고 표현만 바꿔 원본과 거의 비슷한 새 대본을 만듭니다">✍️ 원본과 비슷하게 다시 쓰기</button><button class="btn btn-sm hidden" id="${prefix}-tp-restore">원본 대본으로 되돌리기</button></div>
     <details style="margin-top:8px"><summary class="small">대본 붙여넣기 / 확인 · 수정</summary>
       <div class="tiny muted" style="margin:6px 0">${linkNote} 지원 형식: 유튜브 스크립트 복사본( <code>0:00</code> 줄 + 문장 ), SRT, <code>[mm:ss] 문장</code>, 또는 문장만 줄바꿈.</div>
       <textarea id="${prefix}-tp-text" rows="6" placeholder="0:00&#10;안녕하세요 오늘은&#10;0:04&#10;이 영상에서는 ..."></textarea>
-      <div class="row" style="margin-top:6px;align-items:center;gap:8px"><label class="tiny muted">브라우저 Whisper 모델</label><select id="${prefix}-tp-model" style="width:auto">${raw(STT_MODELS.map(([v, l]) => `<option value="${v}" ${v === sttModel() ? 'selected' : ''}>${esc(l)}</option>`).join(''))}</select><button class="btn btn-sm" id="${prefix}-tp-redo">파일 대본 다시 추출</button></div>
+      <div class="row" style="margin-top:6px;align-items:center;gap:8px;flex-wrap:wrap"><label class="tiny muted">브라우저 Whisper 모델</label><select id="${prefix}-tp-model" style="width:auto">${raw(STT_MODELS.map(([v, l]) => `<option value="${v}" ${v === sttModel() ? 'selected' : ''}>${esc(l)}</option>`).join(''))}</select><button class="btn btn-sm" id="${prefix}-tp-redo">파일 대본 다시 추출</button></div>
     </details></div>`;
 }
 
@@ -82,16 +83,61 @@ export function transcriptController(prefix, { language = () => 'ko' } = {}) {
     finally { state.busy = false; }
   }
   const redo = el('redo'); if (redo) redo.onclick = () => { if (state.file) run(state.file); else if (state.localPath) run(state.localPath); else status('먼저 파일을 올리거나 선택해주세요.'); };
+  const fill = (segs) => { const ta = el('text'); if (ta) ta.value = segs.map((s) => `[${fmt(s.start)}] ${s.text}`).join('\n'); };
+  const authHeaders = () => ({ Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/json' });
+  // 유튜브 링크의 자막을 미리 가져온다 (서버가 InnerTube 로 조회). 같은 링크는 다시 조회하지 않는다
+  let lastUrl = '';
+  async function fromUrl(url, { force = false } = {}) {
+    const u = String(url || '').trim(); if (!u || (!force && u === lastUrl)) return null;
+    const isYt = /(youtube\.com|youtu\.be)\//i.test(u); if (!isYt) return null;
+    lastUrl = u; state.busy = true; setState('자막 가져오는 중...', 'badge-warn'); status('유튜브에서 이 영상의 자막을 가져오는 중...');
+    try {
+      const res = await fetch(downloadUrl(`/api/transcript/youtube?url=${encodeURIComponent(u)}&language=${encodeURIComponent(language())}`), { headers: authHeaders() });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) { state.segments = null; state.engine = null; setState('자막 없음', 'badge-danger'); status(`${j.error || '자막을 가져오지 못했습니다.'} 아래에 대본을 붙여넣으면 그대로 자막이 됩니다.`); return null; }
+      state.segments = j.segments; state.engine = j.engine; state.original = j.segments; state.rewritten = false;
+      setState(`유튜브 자막 ${j.segments.length}줄 ✓`, 'badge-success'); status(`유튜브 자막을 가져왔습니다 (${j.language}${j.kind === 'asr' ? ' · 자동 생성' : ''}). 원본 그대로 쓰거나 "원본과 비슷하게 다시 쓰기"를 누르세요.`); fill(j.segments);
+      el('restore')?.classList.add('hidden');
+      return j;
+    } catch (err) { setState('자막 없음', 'badge-danger'); status(`자막 조회 실패: ${err.message}`); return null; }
+    finally { state.busy = false; }
+  }
+  // 원본과 비슷하게 다시 쓰기 (뜻·타이밍 유지, 표현만 변경)
+  async function rewrite() {
+    for (let i = 0; i < 100 && state.busy; i++) await new Promise((r) => setTimeout(r, 200)); // 자막 가져오기/추출이 진행 중이면 끝날 때까지 기다린다
+    let segs = state.segments; const text = (el('text')?.value || '').trim();
+    const body = segs && segs.length ? { segments: segs, language: language() } : text ? { text, language: language() } : null;
+    if (!body) { status('다시 쓸 대본이 없습니다. 먼저 링크 자막을 가져오거나 파일 대본을 추출하거나 대본을 붙여넣어 주세요.'); return null; }
+    state.busy = true; setState('다시 쓰는 중...', 'badge-warn'); status('원본 대본을 바탕으로 비슷한 새 대본을 만드는 중...');
+    try {
+      const res = await fetch(downloadUrl('/api/transcript/rewrite'), { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `요청 실패 (${res.status})`);
+      if (!state.original) state.original = segs ? segs.map((s) => ({ ...s })) : j.segments.map((s) => ({ start: s.start, end: s.end, text: s.originalText || s.text }));
+      state.segments = j.segments.map((s) => ({ start: s.start, end: s.end, text: s.text })); state.engine = `rewrite:${j.engine}`; state.rewritten = true; fill(state.segments);
+      setState(`새 대본 ${j.segments.length}줄 (${j.changed}줄 변경) ✓`, 'badge-success'); status(`원본과 비슷하게 다시 썼습니다 (${j.engine === 'claude' ? 'AI' : '규칙 기반 바꿔쓰기'}). 아래에서 확인·수정할 수 있고, 되돌릴 수 있습니다.`);
+      el('restore')?.classList.remove('hidden');
+      return j;
+    } catch (err) { setState('다시 쓰기 실패', 'badge-danger'); status(`다시 쓰기 실패: ${err.message}`); return null; }
+    finally { state.busy = false; }
+  }
+  const fetchBtn = el('fetch'); if (fetchBtn) fetchBtn.onclick = () => { const input = state.urlInput; if (!input || !input.value.trim()) return status('먼저 유튜브 링크를 입력해주세요.'); fromUrl(input.value, { force: true }); };
+  const rewriteBtn = el('rewrite'); if (rewriteBtn) rewriteBtn.onclick = () => rewrite();
+  const restoreBtn = el('restore'); if (restoreBtn) restoreBtn.onclick = () => { if (!state.original) return; state.segments = state.original.map((s) => ({ ...s })); state.rewritten = false; state.engine = state.engine?.startsWith('rewrite:') ? 'youtube-captions' : state.engine; fill(state.segments); setState(`원본 대본 ${state.segments.length}줄 ✓`, 'badge-success'); status('원본 대본으로 되돌렸습니다.'); restoreBtn.classList.add('hidden'); };
   return {
     state,
     fromFile(file) { state.file = file; state.localPath = null; return run(file); },
     fromLocalPath(p) { state.localPath = p; state.file = null; return run(p); },
+    fromUrl,
+    rewrite,
+    // 링크 입력칸을 지켜보다가 유튜브 링크가 들어오면 자막을 미리 가져온다
+    watchUrl(input) { if (!input) return; state.urlInput = input; const go = () => fromUrl(input.value); input.addEventListener('change', go); input.addEventListener('blur', go); input.addEventListener('paste', () => setTimeout(go, 50)); if (input.value.trim()) go(); },
     // 요청 본문에 넣을 값. 사용자가 텍스트를 고쳤으면 텍스트가 우선
     payload() {
       const text = (el('text')?.value || '').trim();
       const fromSegs = state.segments ? state.segments.map((s) => `[${fmt(s.start)}] ${s.text}`).join('\n') : '';
       if (text && text !== fromSegs) return { transcriptText: text };
-      if (state.segments && state.segments.length) return { transcript: state.segments.map((s) => ({ ...s })), transcriptEngine: state.engine };
+      if (state.segments && state.segments.length) return { transcript: state.segments.map((s) => ({ start: s.start, end: s.end, text: s.text })), transcriptEngine: state.engine };
       if (text) return { transcriptText: text };
       return {};
     },

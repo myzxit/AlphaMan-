@@ -146,4 +146,5 @@ export { ACTIVITY_KINDS, JobQueue, CancelledError } from './activity.js';
 export { MEDIA_CATEGORIES, validateUpload, UPLOAD_LIMITS } from './medialib.js';
 export { TEMPLATE_KINDS } from './templates.js';
 export { parseVTT } from './subtitles/format.js';
-export { parseTranscriptText } from './subtitles/stt.js';
+export { parseTranscriptText, fetchYoutubeCaptionsDirect, parseTimedTextXml, prefetchLinkTranscript } from './subtitles/stt.js';
+export { rewriteSegments, paraphraseLine } from './subtitles/rewrite.js';

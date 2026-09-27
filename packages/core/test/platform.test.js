@@ -554,3 +554,25 @@ test('유튜브 자막 직접 가져오기: timedtext XML 파싱, 링크 작업�
   assert.equal(await prefetchLinkTranscript({ type: 'youtube', videoId: 'abcdefghijk' }, opts), null, '이미 대본이 있으면 건너뜀');
   assert.equal(await prefetchLinkTranscript({ type: 'youtube', videoId: 'abcdefghijk' }, {}), null, 'ALPHAMAN_YT_CAPTIONS=off 면 조회하지 않음');
 });
+
+test('대본 다시 쓰기(원본과 비슷하게): 규칙 기반은 줄 수·타이밍을 지키며 표현을 바꾸고, 재구성 scriptMode=similar 는 자막·더빙에 새 대본을 쓴다', async () => {
+  const { rewriteSegments, paraphraseLine } = await import('../src/subtitles/rewrite.js');
+  assert.notEqual(paraphraseLine('오늘은 정말 중요한 이야기를 준비했습니다.', { seed: 0 }), '오늘은 정말 중요한 이야기를 준비했습니다.');
+  assert.equal(paraphraseLine('', {}), '');
+  const segs = [{ id: 'a', start: 0, end: 2, text: '안녕하세요 여러분 오늘은 정말 중요한 이야기입니다.' }, { id: 'b', start: 2, end: 4, text: '이 방법을 쓰면 시간이 절반으로 줄어요.' }, { id: 'c', start: 4, end: 6, text: 'This is really important, so remember it.' }];
+  const rw = await rewriteSegments(segs, { language: 'ko', ai: null });
+  assert.equal(rw.engine, 'rules'); assert.equal(rw.segments.length, 3); assert.ok(rw.changed >= 2);
+  assert.deepEqual(rw.segments.map((s) => [s.start, s.end]), [[0, 2], [2, 4], [4, 6]]);
+  assert.ok(rw.segments.every((s) => s.originalText));
+  const a = app();
+  const { user } = a.auth.signup({ email: 'script@test.com', password: 'secret1', name: 'S' });
+  const job = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, transcriptText: SRT, options: { targetMinutes: 1, estimatedDurationSec: 60, scriptMode: 'similar', narration: 'dub', voiceId: 'ko-sunhi' } });
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', job.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.equal(done.result.scriptRewrite.mode, 'similar'); assert.ok(done.result.scriptRewrite.total >= 1);
+  const subs = done.result.subtitles.filter((s) => !s.card);
+  assert.ok(subs.some((s) => s.originalText && s.originalText !== s.text), '일부 자막은 원본과 다른 표현');
+  assert.ok(done.result.narration.lines.every((l) => l.text), '더빙 문장은 새 대본 기준');
+  const bad = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, transcriptText: SRT, options: { targetMinutes: 1, estimatedDurationSec: 60, scriptMode: 'nope' } });
+  assert.equal(bad.options.scriptMode, 'original');
+  await a.activity.queue.idle(8000);
+});

@@ -65,7 +65,8 @@ export const studio = auth(async ({ view, state, navigate, query }) => {
     <div class="card small muted"><b>이용 안내</b><br/>원본 영상 길이만큼 이용권이 차감되고, 2분당 1개의 쇼츠가 생성됩니다. 재생성은 절반만 차감됩니다. 실패 시 자동 환불.</div></div></div>`;
 
   let mode = 'youtube'; let uploadId = null; let localPath = null; let tpl = 'auto'; const langs = new Set();
-  const tc = transcriptController('s'); // 원본 대본 (브라우저 Whisper / 붙여넣기)
+  const tc = transcriptController('s'); // 원본 대본 (브라우저 Whisper / 유튜브 자막 자동 / 붙여넣기 / 비슷하게 다시 쓰기)
+  tc.watchUrl(qs('#s-url'));
   qs('#s-voice-listen').onclick = () => { const v = qs('#s-voice').value || ''; if (v.startsWith('profile:')) playProfileSample(v.slice(8)); else listenFreeVoice(v.replace('free:', ''), freeVoices); };
   qsa('#s-tabs .tab').forEach((t) => { t.onclick = () => { mode = t.dataset.tab; qsa('#s-tabs .tab').forEach((x) => x.classList.remove('active')); t.classList.add('active'); ['youtube', 'file', 'local'].forEach((m) => qs(`#s-${m}`).classList.toggle('hidden', m !== mode)); }; });
   qsa('#s-templates .template-card').forEach((c) => { c.onclick = () => { tpl = c.dataset.tpl; qsa('#s-templates .template-card').forEach((x) => x.classList.remove('active')); c.classList.add('active'); }; });
@@ -182,6 +183,7 @@ export const longform = auth(async ({ view, params, state, navigate, query }) =>
       ${cur ? raw(renderLongform(cur)) : ''}</div>
       <div class="card"><h3>내 작업</h3>${jobs.length ? raw(jobs.map((j) => `<div class="row row-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><a href="#/longform/${j.id}"><b>${esc(j.source.title)}</b></a><div class="row">${statusBadge(j.status)}<button class="btn btn-sm btn-danger" data-del="${j.id}">삭제</button></div></div>`).join('')) : '<p class="muted">작업이 없습니다.</p>'}</div></div>`;
   const tc = transcriptController('l');
+  tc.watchUrl(qs('#l-url'));
   qs('#l-file').onchange = (e) => { const f = e.target.files[0]; if (f) { presetUpload = null; tc.fromFile(f); } };
   if (query.upload) { presetUpload = await prefillUpload(query.upload); if (presetUpload) { qs('#l-url').value = ''; qs('#l-url').placeholder = `파일 관리자에서 선택: ${presetUpload.name}`; toast(`"${presetUpload.name}" 파일이 선택되었습니다. 컷편집 시작을 누르세요.`); } }
   on(view, 'click', '[data-preview-longform]', (e, t) => openPreview({ kind: 'longform', refId: t.dataset.previewLongform }));
