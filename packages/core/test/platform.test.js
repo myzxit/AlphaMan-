@@ -502,3 +502,21 @@ test('보안·결제·이용권 회귀: Google 로그인은 credential 검증 �
   assert.throws(() => a.subtitles.mergeSegments(user.id, 'x', undefined), /찾을 수 없|segmentIds/);
   await assert.rejects(() => a.translate.translateText('hi', 'xx'), (e) => e.status === 400);
 });
+
+test('대본을 구할 수 없으면 작업을 만들지 않고 422 로 안내한다 (이용권 차감·고아 작업 없음)', async () => {
+  const a = app();
+  const { user } = a.auth.signup({ email: 'nostt@test.com', password: 'secret1', name: 'N' });
+  const before = a.credits.balance(user.id);
+  const prev = process.env.ALPHAMAN_ALLOW_SIMULATED_STT; delete process.env.ALPHAMAN_ALLOW_SIMULATED_STT;
+  try {
+    await assert.rejects(() => a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, options: { targetMinutes: 1, estimatedDurationSec: 60 } }), (e) => e.status === 422 && /대본/.test(e.message));
+    await assert.rejects(() => a.shorts.createFromYoutube(user.id, { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 60 } }), (e) => e.status === 422);
+    await assert.rejects(() => a.longform.create(user.id, { url: 'https://youtu.be/abcdefghijk' }), (e) => e.status === 422);
+    // 대본을 붙여넣으면 만들어진다
+    const ok = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, transcriptText: SRT, options: { targetMinutes: 1, estimatedDurationSec: 60 } });
+    assert.ok(ok.id);
+  } finally { if (prev !== undefined) process.env.ALPHAMAN_ALLOW_SIMULATED_STT = prev; }
+  assert.equal(a.remix.list(user.id).length, 1); assert.equal(a.shorts.listJobs(user.id).length, 0); assert.equal(a.longform.list(user.id).length, 0);
+  assert.equal(a.credits.balance(user.id), before - 1);
+  await a.activity.queue.idle(8000);
+});

@@ -1,7 +1,7 @@
 // 롱폼 컷편집: 롱폼 영상 전체에 무음 구간 제거 + 자동 자막 + 챕터 생성 (알파컷 "서비스 > 롱폼 컷편집")
 import { ApiError } from './errors.js';
 import { parseYoutubeUrl, fetchYoutubeMeta, probe, ensureLocalFile } from './media.js';
-import { transcribe, semanticSplit } from './subtitles/stt.js';
+import { transcribe, semanticSplit, assertTranscriptAvailable } from './subtitles/stt.js';
 
 export class LongformEngine {
   constructor({ store, credits, ai, notifications, library = null, seo = null, thumbnail = null, activity = null }) {
@@ -25,6 +25,7 @@ export class LongformEngine {
       source = { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, durationSec: meta.durationSec || 900, thumbnail: meta.thumbnail, tags: meta.tags || [], description: meta.description || '' };
     }
     const opts = { removeSilence: true, silenceThreshold: 0.7, autoSubtitles: true, chapters: true, jumpCuts: true, language: 'ko', ...options };
+    assertTranscriptAvailable({ source, filePath: source.path || null, transcript: Array.isArray(transcript) && transcript.length ? transcript : opts.transcript, transcriptText: transcriptText || opts.transcriptText }); // 대본을 구할 수 없으면 차감 전에 안내
     const minutes = Math.round((source.durationSec / 60) * 100) / 100;
     const job = this.store.insert('longformJobs', { userId, source, options: opts, minutesCharged: minutes, lastCharged: minutes, status: 'processing', progress: 10, result: null });
     try { this.credits.charge(userId, minutes, `롱폼 컷편집: ${source.title}`, { jobId: job.id }); } catch (err) { this.store.remove('longformJobs', job.id); throw err; } // 402 면 고아 작업을 남기지 않는다

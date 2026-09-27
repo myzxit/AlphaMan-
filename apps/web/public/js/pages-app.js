@@ -2,7 +2,7 @@
 import { get, post, put, patch, del, uploadFile, downloadUrl, getToken } from './api.js';
 import { esc, html, raw, toast, modal, confirmDialog, promptDialog, fmtTime, fmtNum, fmtDate, fmtKRW, compactViews, creditsLabel, readVideoMeta, qs, qsa, on, debounce } from './ui.js';
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
-import { openPreview } from './player.js';
+import { openPreview, getWithRetry } from './player.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
 import { openRenderDialog, renderButton, bindRenderButtons } from './render-browser.js';
 import { listenFreeVoice, playProfileSample } from './tts.js';
@@ -107,7 +107,7 @@ export const studio = auth(async ({ view, state, navigate, query }) => {
 
 export const studioJob = auth(async ({ view, params, state, navigate }) => {
   const { templates, ratios } = await get('/api/shorts/templates');
-  let job = await get(`/api/shorts/jobs/${params.id}`);
+  let job = await getWithRetry(`/api/shorts/jobs/${params.id}`); // 방금 만든 작업은 다른 서버 인스턴스에 잠시 뒤 나타날 수 있어 404 를 재시도
   let timer = null;
   bindRenderButtons(view, (k, id) => job.clips?.find((c) => c.id === id)?.title || job.source.title);
   // 브라우저 렌더 저장 후 갱신: 이 페이지에 머무는 동안만 (다른 페이지로 가면 해제)
@@ -171,7 +171,7 @@ function editClipModal(clip, templates, ratios, onSaved) {
 // ---------------- 롱폼 컷편집 ----------------
 export const longform = auth(async ({ view, params, state, navigate, query }) => {
   const jobs = await get('/api/longform/jobs');
-  const cur = params.id ? await get(`/api/longform/jobs/${params.id}`) : null;
+  const cur = params.id ? await getWithRetry(`/api/longform/jobs/${params.id}`) : null;
   let presetUpload = null;
   view.innerHTML = html`<h1>롱폼 컷편집</h1><p class="muted">롱폼 영상 전체의 무음 구간을 제거하고 자동 자막·챕터를 만듭니다. (원본 길이만큼 이용권 차감)</p>
     <div class="split"><div class="card"><div class="field"><label>유튜브 링크 또는 업로드</label><div class="input-row"><input id="l-url" placeholder="https://www.youtube.com/watch?v=..." /><input type="file" id="l-file" accept="video/*" style="max-width:220px" /></div></div>
@@ -245,7 +245,7 @@ export const subtitles = auth(async ({ view, state, navigate, query }) => {
 });
 
 export const subtitleEditor = auth(async ({ view, params, state, navigate, query }) => {
-  let p = await get(`/api/subtitles/projects/${params.id}`);
+  let p = await getWithRetry(`/api/subtitles/projects/${params.id}`);
   const [{ fonts, presets }, targets] = await Promise.all([get('/api/subtitles/fonts'), get('/api/translate/targets')]);
   const prefs = state.user.prefs || {};
   let lang = null; let selected = new Set(); let playhead = 0; let filter = ''; let zoom = 1; let clipboard = []; let focusIdx = -1; let hist = { undo: (p.history || []).length, redo: (p.future || []).length, max: 50 };

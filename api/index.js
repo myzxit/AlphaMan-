@@ -21,6 +21,7 @@ export default async function vercelHandler(req, res) {
   // 다른 인스턴스가 방금 저장한 데이터(예: 새 회원가입)를 놓치지 않도록 요청마다 원격 저장소를 짧은 주기로 다시 읽는다
   if (isApi) await app.store.refreshIfStale(500);
   await handler(req, res);
+  await app.store.flushAsync(); // 응답 직후 변경분을 먼저 공유 저장소에 반영 (작업 진행 중에도 다른 인스턴스가 최신 상태를 본다)
   // 서버리스는 응답 뒤 함수를 동결하므로, 방금 시작된 쇼츠/재구성/롱폼 작업이 끝날 때까지(예산 내) 함수를 살려둔 뒤 저장한다.
   // 응답은 이미 전송됐고, 작업 진행 상황은 클라이언트가 폴링으로 본다.
   if (isApi && app.activity?.queue?.busy) {
