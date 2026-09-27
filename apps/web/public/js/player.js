@@ -109,6 +109,13 @@ export async function mountPlayer(container, spec, { autoplay = false } = {}) {
   if (reg && reg.y + reg.h >= 0.95) { mediaHost.classList.add('cropped'); mediaHost.style.setProperty('--crop', String(reg.h)); }
   else if (reg) { const ov = document.createElement('div'); ov.className = 'player-blur'; ov.style.top = `${reg.y * 100}%`; ov.style.height = `${reg.h * 100}%`; ov.title = '원본 박힌 자막 영역 (렌더 시 제거)'; root.querySelector('.player-stage').insertBefore(ov, cardEl); }
   if (reg) note.textContent += ` · 원본 자막 ${reg.detect ? '자동 감지 영역' : ''} 가림`;
+  // 새 자막을 원본 자막과 비슷하게: 서버 분석 결과(위치·색)가 있으면 그대로, 없으면 제거 영역의 세로 위치에 표시 (정확한 색·크기는 영상 파일을 만들 때 분석)
+  if (!direct && spec.subtitleLook === 'original') {
+    const os = spec.originalStyle; const cy = os?.centerY ?? (reg ? reg.y + reg.h / 2 : null);
+    if (cy != null) { subEl.style.bottom = 'auto'; subEl.style.top = `${Math.max(6, Math.min(92, cy * 100))}%`; subEl.style.transform = 'translateY(-50%)'; }
+    if (os?.color) { subEl.style.color = os.color; subEl.style.textShadow = `0 0 4px ${os.outline || '#000'}, 0 2px 6px ${os.outline || '#000'}`; }
+    note.textContent += ' · 새 자막 원본처럼';
+  }
   if (cues.length || muteOriginal) note.textContent += ` · ${spec.audio?.mode === 'dub' ? `더빙 ${cues.length}문장` : `TTS ${cues.length}개 재생`}${muteOriginal ? ' · 원본 목소리 제거' : duck ? ' · TTS 중 원본 소리 줄임' : ''}`;
   if (muteOriginal) { const b = document.createElement('button'); b.className = 'btn btn-sm player-orig'; b.textContent = '원본 소리 켜기'; b.onclick = () => { originalOff = !originalOff; b.textContent = originalOff ? '원본 소리 켜기' : '원본 소리 끄기'; applyMute(); }; root.querySelector('.player-bar').appendChild(b); }
   applyMute();

@@ -212,3 +212,29 @@ export async function renderClip({ input, output, start, end, ratio = '9:16', su
 }
 
 export const constants = { SUPPORTED_EXT, RECOMMENDED };
+
+// 원본에 박힌 자막 스타일 분석 (ffmpeg 필요): 여러 시점의 작은 원시 RGB 프레임을 뽑아 자막 띠 위치·글자색·외곽선색·크기를 추정한다.
+// ffmpeg 이 없거나 실패하면 null (호출자가 기본 하단 영역/브라우저 분석을 쓴다)
+export async function detectBurnedSubtitleStyle(filePath, { times = [], width = 160 } = {}) {
+  if (!which('ffmpeg') || !filePath || !fs.existsSync(filePath)) return null;
+  const { analyzeSubtitleFrames } = await import('./subtitles/burned.js');
+  const frames = [];
+  for (const t of times.slice(0, 10)) {
+    try {
+      const buf = await runBinary('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, t)), '-i', filePath, '-frames:v', '1', '-vf', `scale=${width}:-2`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']);
+      if (!buf.length) continue;
+      const h = Math.round(buf.length / (width * 3));
+      if (h > 8 && buf.length === width * h * 3) frames.push({ data: buf, width, height: h, channels: 3 });
+    } catch { /* 이 시점은 건너뜀 */ }
+  }
+  return frames.length ? analyzeSubtitleFrames(frames) : null;
+}
+function runBinary(bin, args) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const chunks = []; let err = '';
+    p.stdout.on('data', (d) => chunks.push(d)); p.stderr.on('data', (d) => { err += d; });
+    p.on('error', reject);
+    p.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(err || `${bin} exit ${code}`))));
+  });
+}

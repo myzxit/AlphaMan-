@@ -520,3 +520,27 @@ test('대본을 구할 수 없으면 작업을 만들지 않고 422 로 안내�
   assert.equal(a.credits.balance(user.id), before - 1);
   await a.activity.queue.idle(8000);
 });
+
+test('원본 자막과 비슷한 새 자막: 프레임 분석으로 띠 위치·글자색·외곽선·크기를 추정하고, ASS 스타일과 미리보기 스펙에 반영된다', async () => {
+  const { analyzeSubtitleFrames, hexToAss } = await import('../src/subtitles/burned.js');
+  const { toASS } = await import('../src/subtitles/format.js');
+  const w = 160; const h = 90; const d = new Uint8Array(w * h * 3).fill(40);
+  for (let y = 72; y < 80; y++) for (let x = 20; x < 140; x++) { const p = (y * w + x) * 3; const on = ((x >> 1) + y) % 3 === 0; d[p] = on ? 250 : 5; d[p + 1] = on ? 220 : 5; d[p + 2] = on ? 30 : 5; }
+  const st = analyzeSubtitleFrames([{ data: d, width: w, height: h, channels: 3 }, { data: d, width: w, height: h, channels: 3 }]);
+  assert.ok(st && st.detected); assert.equal(st.align, 'bottom'); assert.ok(st.band.y > 0.7 && st.band.y + st.band.h <= 1);
+  assert.ok(/^#f[0-9a-f]d[0-9a-f]1[0-9a-f]$/i.test(st.color), st.color); // 노란 글자
+  assert.ok(st.sizeRatio >= 0.03 && st.sizeRatio <= 0.12);
+  assert.equal(analyzeSubtitleFrames([{ data: new Uint8Array(w * h * 3).fill(120), width: w, height: h, channels: 3 }]), null, '자막이 없는 프레임은 null');
+  assert.equal(hexToAss('#ffcc00'), '&H0000CCFF');
+  const ass = toASS([{ start: 0, end: 1, text: '안녕' }], { size: 48, primary: hexToAss(st.color), outline: hexToAss(st.outline), playResX: 1920, playResY: 1080, alignment: 2, marginV: 60 });
+  assert.ok(ass.includes(',48,&H00') && /,2,40,40,60,1/.test(ass), ass.split('\n')[9]);
+  // 옵션 기본값·검증 + 미리보기 스펙 전달
+  const a = app();
+  const { user } = a.auth.signup({ email: 'look@test.com', password: 'secret1', name: 'L' });
+  const job = await a.remix.create(user.id, { url: 'https://youtu.be/abcdefghijk', rightsConfirmed: true, transcriptText: SRT, options: { targetMinutes: 1, estimatedDurationSec: 60, subtitleLook: 'weird' } });
+  assert.equal(job.options.subtitleLook, 'original');
+  const done = await waitFor(() => { const j = a.store.get('remixJobs', job.id); return j.status === 'done' ? j : null; }, 8000);
+  assert.equal(done.result.template.look, 'original');
+  const spec = a.library.previewSpec(user.id, 'remix', job.id);
+  assert.equal(spec.subtitleLook, 'original'); assert.ok('originalStyle' in spec);
+});

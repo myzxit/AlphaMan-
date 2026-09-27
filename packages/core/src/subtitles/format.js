@@ -28,7 +28,8 @@ export function toVTT(segments) {
   return `WEBVTT\n\n${segments.map((s) => `${formatTime(s.start, { ms: '.' })} --> ${formatTime(s.end, { ms: '.' })}\n${s.text}\n`).join('\n')}`;
 }
 
-export function toASS(segments, { font = 'Noto Sans KR', size = 64, primary = '&H00FFFFFF', outline = '&H00000000', playResX = 1080, playResY = 1920 } = {}) {
+// alignment: ASS 숫자패드 기준 (2 하단 중앙 · 5 중앙 · 8 상단 중앙), marginV: 가장자리에서의 거리(px, 정렬이 5 면 무시)
+export function toASS(segments, { font = 'Noto Sans KR', size = 64, primary = '&H00FFFFFF', outline = '&H00000000', playResX = 1080, playResY = 1920, alignment = 2, marginV = 220, outlineWidth = 4 } = {}) {
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${playResX}
@@ -37,7 +38,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,${font},${size},${primary},&H000000FF,${outline},&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,220,1
+Style: Default,${font},${size},${primary},&H000000FF,${outline},&H80000000,-1,0,0,0,100,100,0,0,1,${outlineWidth},2,${alignment},40,40,${Math.round(marginV)},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
