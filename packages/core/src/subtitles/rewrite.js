@@ -35,7 +35,6 @@ export function paraphraseLine(text, { language = 'ko', seed = 0 } = {}) {
     for (const [re, rep] of KO_ENDINGS) { if (re.test(t)) { t = t.replace(re, rep); break; } }
     // 군더더기 정리 + 접속어 변주
     t = t.replace(/^(자,|자 |음,|어,|그니까 )\s*/, '');
-    if (seed % 3 === 0 && /^(이|그|저)/.test(t) === false && !/^(그러면|그런데|그래서|하지만)/.test(t) && t.length > 12 && seed % 6 === 0) t = `그러면 ${t}`;
   } else {
     let swapped = 0;
     for (let k = 0; k < EN_SYNONYMS.length && swapped < 2; k++) {
