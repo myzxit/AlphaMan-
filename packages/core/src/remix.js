@@ -5,9 +5,10 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { ApiError } from './errors.js';
-import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run, ensureLocalFile, downloadYoutube, separateVocals, ffPath } from './media.js';
-import { transcribe, semanticSplit, assertTranscriptAvailable } from './subtitles/stt.js';
+import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run, ensureLocalFile, downloadYoutube, separateVocals, ffPath, detectBurnedSubtitleStyle } from './media.js';
+import { transcribe, semanticSplit, assertTranscriptAvailable, prefetchLinkTranscript } from './subtitles/stt.js';
 import { toASS } from './subtitles/format.js';
+import { hexToAss } from './subtitles/burned.js';
 import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
 
 export const REMIX_LIMITS = Object.freeze({ minMinutes: 1, maxMinutes: 28 });
@@ -23,6 +24,7 @@ export const REMIX_DEFAULTS = Object.freeze({
   newSfx: true,                // 새 효과음 큐
   newBgm: true,                // 새 배경음악
   narration: 'none',           // none | intro | full | dub  (dub = 자막 전체를 선택한 목소리로 읽어 원본 목소리를 대체)
+  subtitleLook: 'original',    // original = 원본에 박힌 자막과 비슷한 위치·크기·색으로 새 자막을 입힌다 (프레임 분석) | template = 템플릿 스타일
   voiceProfileId: null,        // 내 목소리 프로필 (없으면 voiceId 의 무료 한국어 목소리)
   voiceId: null,               // 무료 목소리 id (없으면 기본 '선희')
   outro: true,                 // 영상 마무리 구독·좋아요·알림 카드
@@ -57,6 +59,7 @@ export class RemixEngine {
     if (!(target >= REMIX_LIMITS.minMinutes && target <= REMIX_LIMITS.maxMinutes)) throw new ApiError(400, `목표 길이는 ${REMIX_LIMITS.minMinutes}~${REMIX_LIMITS.maxMinutes}분 사이여야 합니다.`);
     if (!['none', 'intro', 'full', 'dub'].includes(opts.narration)) throw new ApiError(400, '내레이션 모드가 올바르지 않습니다.');
     if (!['auto', 'bottom', 'center', 'top'].includes(opts.subtitleRegion)) opts.subtitleRegion = 'auto';
+    if (!['original', 'template'].includes(opts.subtitleLook)) opts.subtitleLook = 'original';
     if (opts.narration === 'dub') opts.keepOriginalVoice = false; // 더빙은 원본 목소리를 대체한다
     if (!['auto', '16:9', '9:16', '1:1', '4:5'].includes(opts.ratio)) throw new ApiError(400, '지원하지 않는 비율입니다.');
     if (opts.narration !== 'none') this.voice.resolve(userId, opts); // 내 목소리 프로필이 없으면 무료 목소리로 내레이션
@@ -93,6 +96,7 @@ export class RemixEngine {
       reference = { url: ref.url, platform: ref.platform, videoId: ref.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec: meta.durationSec || (isShorts ? 45 : null), isShorts, chapters: meta.chapters || [], tags: meta.tags || [], description: meta.description || '' };
     }
 
+    await prefetchLinkTranscript(source, opts); // 유튜브 자막을 직접 가져와 "원본 대본 그대로" (yt-dlp 없이도)
     assertTranscriptAvailable({ source, filePath: source.path || null, transcript: opts.transcript, transcriptText: opts.transcriptText }); // 대본을 구할 수 없으면 차감 전에 안내
     const minutes = Math.max(0.5, Math.round((source.durationSec / 60) * 100) / 100);
     const job = this.store.insert('remixJobs', {
@@ -146,12 +150,22 @@ export class RemixEngine {
     }
 
     this._log(jobId, 'transcribing', 26, '원본 음성을 인식해 대본을 만드는 중');
-    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: opts.language, title: source.title, source, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' });
+    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: opts.language, title: source.title, source, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '', transcriptEngine: opts.transcriptEngine || null });
     const genre = detectGenre(source.title, stt.segments.map((s) => s.text).join(' '));
     await this._wait(300);
 
     this._log(jobId, 'cleaning', 40, `원본 정리 중 (${[opts.removeBurnedSubtitles && '박힌 자막 제거', opts.removeSfx && '효과음 제거', opts.removeBgm && '배경음 제거'].filter(Boolean).join(', ') || '원본 유지'})`);
     const cleaning = this.planCleaning(source, opts);
+    // ffmpeg 이 있고 원본 파일이 있으면 프레임을 분석해 원본 자막의 실제 위치·글자색·크기를 알아낸다 (제거 영역 + "원본과 비슷한 새 자막" 에 사용)
+    if (source.path && which('ffmpeg') && (opts.removeBurnedSubtitles || opts.subtitleLook === 'original')) {
+      const dur = source.durationSec || 60; const times = Array.from({ length: 8 }, (_, i) => dur * ((i + 0.5) / 8));
+      const style = await detectBurnedSubtitleStyle(source.path, { times }).catch(() => null);
+      if (style) {
+        cleaning.originalSubtitleStyle = style;
+        const step = cleaning.steps.find((s) => s.id === 'burned-subtitles');
+        if (step && (opts.subtitleRegion === 'auto' || !step.region)) { step.region = { ...style.band, detect: false, detected: true }; const edge = step.region.y + step.region.h >= 0.95 || step.region.y <= 0.03; step.method = edge ? 'crop' : 'blur'; step.note = `자막 띠 자동 감지(${Math.round(step.region.y * 100)}~${Math.round((step.region.y + step.region.h) * 100)}%) → ${edge ? '크롭' : '블러'}`; }
+      }
+    }
     if (source.path && (opts.removeSfx || opts.removeBgm) && which('demucs')) {
       const vocals = await separateVocals(source.path, path.join(this.outputDir, job.userId, 'stems'));
       if (vocals) { cleaning.vocalsPath = vocals; cleaning.steps.forEach((st) => { if (st.id === 'sfx' || st.id === 'bgm') st.method = 'demucs (실제 분리)'; }); }
@@ -331,7 +345,7 @@ export class RemixEngine {
       narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId || null, voice: this.voice.resolve(job.userId, opts), lines: renders, replacesOriginalVoice: ['full', 'dub'].includes(opts.narration) && !opts.keepOriginalVoice, exclusive: opts.narration === 'dub', duckLevel: opts.keepOriginalVoice ? 0.25 : 0, withFile: renders.filter((l) => l.audioPath || l.audioUrl).length };
     }
 
-    return { timeline, template: { id: template.id, name: template.name, font: template.font, position: styleProfile?.subtitlePosition || 'bottom' }, subtitles, sfx, bgm, zoom, transitions, colorGrade, narration, ratio, extended: plan.extended, stretchFactor: plan.stretchFactor, mirroredFromReference: styleProfile ? styleProfile.mirrored : [] };
+    return { timeline, template: { id: template.id, name: template.name, font: template.font, position: styleProfile?.subtitlePosition || 'bottom', look: opts.subtitleLook || 'original' }, subtitles, sfx, bgm, zoom, transitions, colorGrade, narration, ratio, extended: plan.extended, stretchFactor: plan.stretchFactor, mirroredFromReference: styleProfile ? styleProfile.mirrored : [] };
   }
 
   async writeNarration({ plan, subtitles, mode, tone }) {
@@ -354,7 +368,12 @@ export class RemixEngine {
   async render({ job, plan, rebuild, cleaning }) {
     const dims = rebuild.ratio === '9:16' ? [1080, 1920] : rebuild.ratio === '1:1' ? [1080, 1080] : [1920, 1080];
     const [w, h] = dims;
-    const ass = toASS(rebuild.subtitles.filter((s) => !s.card), { font: rebuild.template.font, size: 56, playResX: w, playResY: h });
+    // 새 자막 모양: 원본 자막 분석 결과가 있고 "원본과 비슷하게" 면 같은 위치(상/중/하 + 여백)·크기·글자색·외곽선색으로 굽는다
+    const os = rebuild.template.look === 'original' ? cleaning.originalSubtitleStyle : null;
+    const assOpts = os
+      ? { font: rebuild.template.font, size: Math.round(h * os.sizeRatio), primary: hexToAss(os.color) || '&H00FFFFFF', outline: hexToAss(os.outline) || '&H00000000', playResX: w, playResY: h, alignment: os.align === 'top' ? 8 : os.align === 'center' ? 5 : 2, marginV: os.align === 'top' ? Math.round(h * os.band.y) : Math.round(h * Math.max(0.02, 1 - (os.band.y + os.band.h))) }
+      : { font: rebuild.template.font, size: 56, playResX: w, playResY: h };
+    const ass = toASS(rebuild.subtitles.filter((s) => !s.card), assOpts);
     const dir = path.join(this.outputDir, job.userId, 'remix');
     const out = path.join(dir, `${job.id}.mp4`);
     const assPath = path.join(dir, `${job.id}.ass`);

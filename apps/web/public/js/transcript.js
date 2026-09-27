@@ -52,7 +52,7 @@ export function transcriptPanel(prefix, { info = null } = {}) {
   const linkNote = t.youtubeCaptions ? '이 서버는 유튜브 링크의 자막(스크립트)을 자동으로 가져옵니다. 자막이 없는 영상이면 아래에 대본을 붙여넣어 주세요.' : '웹사이트 버전은 유튜브 링크의 대본을 서버에서 가져올 수 없습니다. 유튜브 영상 아래 "...더보기 → 스크립트 표시"에서 대본을 복사해 붙여넣으면 원본과 똑같은 자막이 됩니다. (프로그램 버전은 자동으로 가져옵니다)';
   return html`<div class="card transcript-panel" id="${prefix}-tp" style="margin-top:12px;padding:14px">
     <div class="row row-between"><b>📝 원본 대본 (자막을 원본과 똑같이)</b><span class="badge badge-soft" id="${prefix}-tp-state">대본 없음</span></div>
-    <div class="tiny muted" id="${prefix}-tp-status" style="margin-top:4px">파일을 올리면 브라우저에서 Whisper 로 원본 음성을 그대로 받아 적습니다 (처음 한 번 모델 다운로드). 링크는 대본을 붙여넣어 주세요.</div>
+    <div class="tiny muted" id="${prefix}-tp-status" style="margin-top:4px">파일을 올리면 브라우저에서 Whisper 로 원본 음성을 그대로 받아 적습니다 (처음 한 번 모델 다운로드). 유튜브 링크는 영상의 자막(자동 생성 포함)을 자동으로 가져오고, 자막이 없는 영상만 대본을 붙여넣으면 됩니다.</div>
     <div class="progress hidden" id="${prefix}-tp-bar-wrap" style="margin-top:6px"><div id="${prefix}-tp-bar" style="width:0"></div></div>
     <details style="margin-top:8px"><summary class="small">대본 붙여넣기 / 확인 · 수정</summary>
       <div class="tiny muted" style="margin:6px 0">${linkNote} 지원 형식: 유튜브 스크립트 복사본( <code>0:00</code> 줄 + 문장 ), SRT, <code>[mm:ss] 문장</code>, 또는 문장만 줄바꿈.</div>

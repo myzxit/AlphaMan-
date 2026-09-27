@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { which, run } from '../media.js';
+import { which, run, fetchYoutubeInnertube } from '../media.js';
 import { parseSRT } from './format.js';
 import { ApiError } from '../errors.js';
 
@@ -114,14 +114,59 @@ export function assertTranscriptAvailable({ source = null, filePath = null, tran
   if (isLink && which('yt-dlp')) return true;
   if (SIMULATED_ALLOWED()) return true;
   throw new ApiError(422, isLink
-    ? '이 서버에서는 유튜브 링크의 대본을 가져올 수 없습니다. 유튜브 "스크립트 표시"에서 복사한 대본을 아래 대본 칸에 붙여넣거나, 영상 파일을 올리면(브라우저에서 대본 추출) 원본과 똑같은 자막이 됩니다. PC 프로그램 버전은 링크 대본을 자동으로 가져옵니다. (이용권은 차감되지 않았습니다)'
+    ? '이 유튜브 영상에는 자막(자동 생성 자막 포함)이 없거나 가져오지 못했습니다. 유튜브 "스크립트 표시"에서 복사한 대본을 아래 대본 칸에 붙여넣거나, 영상 파일을 올리면(브라우저에서 대본 추출) 원본과 똑같은 자막이 됩니다. (이용권은 차감되지 않았습니다)'
     : '대본이 없습니다. 파일을 올릴 때 "브라우저에서 대본 추출"이 끝날 때까지 기다리거나, 대본을 붙여넣어 주세요. (이용권은 차감되지 않았습니다)');
+}
+
+// 유튜브 자막 직접 가져오기 (yt-dlp 없이, 서버리스 포함): InnerTube 로 자막 트랙 목록 → 요청 언어 우선(업로드 자막 > 자동 생성) → timedtext XML/json3 파싱
+// 결과: { engine:'youtube-captions', exact:true, segments, language, kind } 또는 null (자막 없음/실패). ALPHAMAN_YT_CAPTIONS=off 면 건너뜀(테스트)
+export async function fetchYoutubeCaptionsDirect(videoId, language = 'ko') {
+  if (process.env.ALPHAMAN_YT_CAPTIONS === 'off' || !videoId) return null;
+  try {
+    const info = await fetchYoutubeInnertube(videoId, { hl: language });
+    const tracks = info.captionTracks || [];
+    if (!tracks.length) return null;
+    const base = (l) => String(l || '').split('-')[0];
+    const pick = tracks.find((t) => t.lang === language && !t.kind) || tracks.find((t) => base(t.lang) === base(language) && !t.kind)
+      || tracks.find((t) => t.lang === language) || tracks.find((t) => base(t.lang) === base(language))
+      || tracks.find((t) => !t.kind) || tracks[0];
+    const res = await fetch(`${pick.url}${pick.url.includes('?') ? '&' : '?'}fmt=json3`, { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const text = await res.text();
+    const segs = text.trim().startsWith('{') ? parseJson3(JSON.parse(text)) : parseTimedTextXml(text);
+    if (!segs.length) return null;
+    return { engine: 'youtube-captions', exact: true, segments: normalizeSegments(segs), language: pick.lang, kind: pick.kind || 'manual', tracks: tracks.map((t) => `${t.lang}${t.kind ? `(${t.kind})` : ''}`) };
+  } catch (err) { console.warn('[stt] 유튜브 자막 직접 가져오기 실패:', err.message); return null; }
+}
+
+// timedtext XML: <p t="시작ms" d="길이ms">텍스트(또는 <s> 단어 태그)</p>
+export function parseTimedTextXml(xml) {
+  const out = [];
+  const re = /<p\b([^>]*)>([\s\S]*?)<\/p>/g; let m;
+  const attr = (a, k) => { const mm = new RegExp(`${k}="(\\d+)"`).exec(a); return mm ? Number(mm[1]) : null; };
+  const decode = (s) => s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))).replace(/\s+/g, ' ').trim();
+  while ((m = re.exec(xml))) {
+    const t = attr(m[1], 't'); const d = attr(m[1], 'd'); const text = decode(m[2]);
+    if (t == null || !text) continue;
+    out.push({ start: t / 1000, end: (t + (d || 3000)) / 1000, text });
+  }
+  return out;
+}
+
+// 링크 작업 생성 전에 유튜브 자막을 미리 가져와 옵션에 넣는다 (yt-dlp 없이도 "원본 대본 그대로"). 못 가져오면 그대로 두고 호출자가 안내한다
+export async function prefetchLinkTranscript(source, opts, { language = 'ko' } = {}) {
+  if (!source || !source.videoId || !(source.type === 'youtube' || source.platform === 'youtube')) return null;
+  if ((Array.isArray(opts.transcript) && opts.transcript.length) || (opts.transcriptText && String(opts.transcriptText).trim())) return null;
+  const cap = await fetchYoutubeCaptionsDirect(source.videoId, opts.language || language);
+  if (!cap) return null;
+  opts.transcript = cap.segments; opts.transcriptEngine = cap.engine; opts.transcriptLanguage = cap.language; opts.transcriptKind = cap.kind;
+  return cap;
 }
 
 // 대본 확보 우선순위: ① 클라이언트가 보낸 대본(브라우저 Whisper / 붙여넣기) ② 서버 Whisper CLI ③ yt-dlp 유튜브 자막
 // ④ (테스트·데모 전용, ALPHAMAN_ALLOW_SIMULATED_STT=1) 시뮬레이션. 그 외에는 가짜 대본을 만들지 않고 안내와 함께 실패한다.
-export async function transcribe({ filePath, durationSec, language = 'ko', title = '', source = null, transcript = null, transcriptText = '' }) {
-  if (Array.isArray(transcript) && transcript.length) return { engine: transcript.engine || 'client', exact: true, segments: normalizeSegments(transcript) };
+export async function transcribe({ filePath, durationSec, language = 'ko', title = '', source = null, transcript = null, transcriptText = '', transcriptEngine = null }) {
+  if (Array.isArray(transcript) && transcript.length) return { engine: transcriptEngine || transcript.engine || 'client', exact: true, segments: normalizeSegments(transcript) };
   if (transcriptText && String(transcriptText).trim()) {
     const segs = parseTranscriptText(transcriptText, durationSec);
     if (segs.length) return { engine: 'pasted-transcript', exact: true, segments: normalizeSegments(segs) };
@@ -136,7 +181,7 @@ export async function transcribe({ filePath, durationSec, language = 'ko', title
     } catch (err) { console.warn('[stt] whisper 실행 실패:', err.message); }
   }
   if (source && source.videoId && (source.type === 'youtube' || source.platform === 'youtube')) {
-    const cap = await fetchYoutubeCaptionsViaYtDlp(source.videoId, language);
+    const cap = (await fetchYoutubeCaptionsViaYtDlp(source.videoId, language)) || (await fetchYoutubeCaptionsDirect(source.videoId, language));
     if (cap) return cap;
   }
   if (SIMULATED_ALLOWED()) return { engine: 'simulated', exact: false, segments: synthesizeTranscript({ durationSec, language, title }) };

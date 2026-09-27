@@ -223,6 +223,8 @@ export class LibraryService {
         // 미리보기에서 원본 박힌 자막이 보이지 않도록 하단을 잘라내고(렌더 계획과 동일), 내레이션 TTS 를 시점에 맞춰 재생. 전체 더빙이면 원본 소리를 끈다
         cropBottom: burnedRegion && burnedRegion.y + burnedRegion.h >= 0.95 ? round(burnedRegion.h) : 0,
         burnedRegion, // { x, y, w, h, detect }: 브라우저 렌더러/플레이어가 이 영역을 잘라내거나 블러로 가린다. detect 면 프레임을 분석해 실제 띠를 찾는다
+        // 새 자막 모양: 'original' 이면 원본 자막 분석 결과(위치·크기·색)대로 입힌다. 서버(ffmpeg) 분석 결과가 없으면 브라우저가 렌더 시 직접 분석한다
+        subtitleLook: r.template?.look || 'original', originalStyle: r.cleaning?.originalSubtitleStyle || null,
         audio: { muteOriginal: Boolean(r.narration?.replacesOriginalVoice), duckOriginal: true, duckLevel: r.narration?.duckLevel ?? 0.25, exclusiveCues: Boolean(r.narration?.exclusive), mode: r.narration?.mode || 'none', cues: (r.narration?.lines || []).map((l) => cue(l, l.at, this.store)) },
         seo: r.seo || null, thumbnailSet: job.thumbnailSet ? { ...job.thumbnailSet, svg: undefined, imageUrl: `/api/thumbnail/remix/${job.id}/image.svg?v=${encodeURIComponent(job.thumbnailSet.updatedAt)}` } : null,
       };
