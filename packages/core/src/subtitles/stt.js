@@ -105,6 +105,19 @@ async function fetchYoutubeCaptionsViaYtDlp(videoId, language) {
   } catch (err) { console.warn('[stt] yt-dlp 자막 가져오기 실패:', err.message); return null; }
 }
 
+// 작업을 만들기(이용권 차감) 전에 대본을 구할 방법이 하나라도 있는지 확인한다. 없으면 바로 422 로 안내 (실패한 작업을 만들지 않는다)
+export function assertTranscriptAvailable({ source = null, filePath = null, transcript = null, transcriptText = '' } = {}) {
+  if (Array.isArray(transcript) && transcript.length) return true;
+  if (transcriptText && String(transcriptText).trim()) return true;
+  if (which('whisper') && filePath && fs.existsSync(filePath)) return true;
+  const isLink = Boolean(source && source.videoId && (source.type === 'youtube' || source.platform === 'youtube'));
+  if (isLink && which('yt-dlp')) return true;
+  if (SIMULATED_ALLOWED()) return true;
+  throw new ApiError(422, isLink
+    ? '이 서버에서는 유튜브 링크의 대본을 가져올 수 없습니다. 유튜브 "스크립트 표시"에서 복사한 대본을 아래 대본 칸에 붙여넣거나, 영상 파일을 올리면(브라우저에서 대본 추출) 원본과 똑같은 자막이 됩니다. PC 프로그램 버전은 링크 대본을 자동으로 가져옵니다. (이용권은 차감되지 않았습니다)'
+    : '대본이 없습니다. 파일을 올릴 때 "브라우저에서 대본 추출"이 끝날 때까지 기다리거나, 대본을 붙여넣어 주세요. (이용권은 차감되지 않았습니다)');
+}
+
 // 대본 확보 우선순위: ① 클라이언트가 보낸 대본(브라우저 Whisper / 붙여넣기) ② 서버 Whisper CLI ③ yt-dlp 유튜브 자막
 // ④ (테스트·데모 전용, ALPHAMAN_ALLOW_SIMULATED_STT=1) 시뮬레이션. 그 외에는 가짜 대본을 만들지 않고 안내와 함께 실패한다.
 export async function transcribe({ filePath, durationSec, language = 'ko', title = '', source = null, transcript = null, transcriptText = '' }) {

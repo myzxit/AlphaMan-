@@ -44,6 +44,9 @@ export function createRequestHandler(app, { webDir = DEFAULT_WEB_DIR } = {}) {
         }
         const ctx = { req, res, headers: req.headers, params: match.params, query: Object.fromEntries(url.searchParams), body, raw, token, user, app };
         const result = await match.handler(ctx);
+        // 변경 요청(POST/PUT/PATCH/DELETE)은 원격 저장소(서버리스 인스턴스 공유) 저장이 끝난 뒤 응답한다:
+        // 방금 만든 작업을 다른 인스턴스가 곧바로 조회해도 "찾을 수 없습니다" 가 나지 않도록
+        if (req.method !== 'GET' && app.store?.remote && app.store.flushAsync) { try { await app.store.flushAsync(); } catch { /* 저장 실패는 다음 요청에서 재시도 */ } }
         if (result && result._sent) return undefined; // 핸들러가 직접 응답을 보낸 경우
         if (result && result._file) return sendFile(req, res, result);
         if (result && result._raw != null) {

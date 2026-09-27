@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { ApiError } from '../errors.js';
 import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, renderClip, ensureLocalFile, downloadYoutube, separateVocals, which } from '../media.js';
-import { transcribe, semanticSplit } from '../subtitles/stt.js';
+import { transcribe, semanticSplit, assertTranscriptAvailable } from '../subtitles/stt.js';
 import { toASS, exportSubtitles } from '../subtitles/format.js';
 import { TEMPLATES, GENRES, RATIOS, detectGenre, templateFor } from './templates.js';
 
@@ -69,6 +69,7 @@ export class ShortsEngine {
 
   _create(userId, { source, options }) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
+    assertTranscriptAvailable({ source, filePath: source.path || null, transcript: opts.transcript, transcriptText: opts.transcriptText }); // 대본을 구할 수 없으면 차감 전에 안내
     if (!RATIOS.includes(opts.ratio)) throw new ApiError(400, `지원하지 않는 비율입니다: ${opts.ratio}`);
     const minutes = Math.max(0.5, Math.round((source.durationSec / 60) * 100) / 100);
     const job = this.store.insert('jobs', {

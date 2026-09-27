@@ -6,7 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { ApiError } from './errors.js';
 import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run, ensureLocalFile, downloadYoutube, separateVocals, ffPath } from './media.js';
-import { transcribe, semanticSplit } from './subtitles/stt.js';
+import { transcribe, semanticSplit, assertTranscriptAvailable } from './subtitles/stt.js';
 import { toASS } from './subtitles/format.js';
 import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
 
@@ -93,6 +93,7 @@ export class RemixEngine {
       reference = { url: ref.url, platform: ref.platform, videoId: ref.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec: meta.durationSec || (isShorts ? 45 : null), isShorts, chapters: meta.chapters || [], tags: meta.tags || [], description: meta.description || '' };
     }
 
+    assertTranscriptAvailable({ source, filePath: source.path || null, transcript: opts.transcript, transcriptText: opts.transcriptText }); // 대본을 구할 수 없으면 차감 전에 안내
     const minutes = Math.max(0.5, Math.round((source.durationSec / 60) * 100) / 100);
     const job = this.store.insert('remixJobs', {
       userId, source, reference, options: opts, minutesCharged: minutes, lastCharged: minutes, rightsConfirmedAt: new Date().toISOString(),

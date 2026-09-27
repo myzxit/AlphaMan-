@@ -95,7 +95,7 @@ export const remix = auth(async ({ view, state, navigate, query }) => {
 });
 
 export const remixJob = auth(async ({ view, params, navigate }) => {
-  let job = await get(`/api/remix/jobs/${params.id}`);
+  let job = await getWithRetry(`/api/remix/jobs/${params.id}`); // 방금 만든 작업은 다른 서버 인스턴스에 잠시 뒤 나타날 수 있어 404 를 재시도
   let timer = null;
   bindRenderButtons(view, () => job.result?.plan?.title || job.source.title);
   const onRendered = () => { if (!location.hash.startsWith(`#/remix/${job.id}`)) return; get(`/api/remix/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); };
