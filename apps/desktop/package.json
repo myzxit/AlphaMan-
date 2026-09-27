@@ -38,6 +38,14 @@
         ]
       },
       {
+        "from": "../../packages/core",
+        "to": "app/node_modules/@alphaman/core",
+        "filter": [
+          "src/**",
+          "package.json"
+        ]
+      },
+      {
         "from": "../../apps/server",
         "to": "app/apps/server",
         "filter": [

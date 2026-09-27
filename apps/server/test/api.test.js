@@ -228,9 +228,9 @@ test('API: 브라우저 렌더 업로드(조각) → /api/library/:id/video 스�
     const tok = su.data.token;
     const job = await t.call('POST', '/api/shorts/jobs', { url: 'https://youtu.be/abcdefghijk', options: { estimatedDurationSec: 120 }, transcriptText: '1\n00:00:00,000 --> 00:00:02,000\n안녕\n\n2\n00:00:02,500 --> 00:00:05,000\n테스트\n' }, tok);
     assert.equal(job.status, 200);
-    await new Promise((r) => setTimeout(r, 1500));
-    const lib = await t.call('GET', '/api/library?kind=shorts', undefined, tok);
-    const item = lib.data.items[0]; assert.ok(item);
+    let item = null;
+    for (let i = 0; i < 40 && !item; i++) { const lib = await t.call('GET', '/api/library?kind=shorts', undefined, tok); item = lib.data.items[0] || null; if (!item) await new Promise((r) => setTimeout(r, 150)); }
+    assert.ok(item, '쇼츠 작업이 끝나면 보관함 항목이 생긴다');
     const bytes = Buffer.alloc(9000, 1);
     const a1 = await t.call('POST', `/api/library/${item.id}/render`, bytes.subarray(0, 4000), tok, { 'content-type': 'video/webm', 'x-upload-id': 'abc', 'x-part': '0', 'x-parts': '2' });
     assert.equal(a1.status, 200); assert.equal(a1.data.done, false);

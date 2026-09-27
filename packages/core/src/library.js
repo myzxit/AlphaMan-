@@ -194,10 +194,12 @@ export class LibraryService {
       if (clip.outro) { items.push({ kind: 'card', title: clip.outro.text, cta: true, channel: clip.outro.channel || null, start: 0, end: 0, speed: 1, newStart: round(cursor), newEnd: round(cursor + clip.outro.durationSec) }); cursor += clip.outro.durationSec; }
       const rendered = Boolean(clip.render?.rendered && clip.render.output && fs.existsSync(clip.render.output));
       const lib = rendered ? null : this._libRender(userId, 'shorts', clip.id);
+      // 자막은 클립 기준 시각(원본 = clip.start + t) → 무음 컷을 뺀 새 타임라인 시각으로 변환 (컷마다 자막이 늦어지던 문제)
+      const toNew = (t) => { const src = clip.start + t; for (const it of items) if (src >= it.start && src <= it.end) return round(it.newStart + (src - it.start)); const before = items.filter((it) => it.kind === 'source' && it.end <= src).pop(); return before ? before.newEnd : 0; };
       return {
-        kind: 'shorts', refId: clip.id, title: clip.title, ratio: clip.ratio, durationSec: round(cursor), rendered: rendered || Boolean(lib), burnedSubtitles: Boolean(lib), renderedBy: rendered ? 'ffmpeg' : lib ? 'browser' : null,
+        kind: 'shorts', refId: clip.id, title: clip.title, ratio: clip.ratio, durationSec: round(cursor), rendered: rendered || Boolean(lib), burnedSubtitles: rendered || Boolean(lib), renderedBy: rendered ? 'ffmpeg' : lib ? 'browser' : null,
         renderUrl: rendered ? `/api/shorts/clips/${clip.id}/export?format=mp4&inline=1` : lib ? lib.url : null,
-        source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map(sub), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
+        source: sourceSpec(job.source), items, subtitles: (clip.subtitles || []).map((s) => ({ ...sub(s), start: toNew(s.start), end: toNew(s.end) })).filter((s) => s.end > s.start), hook: clip.hook ? { text: clip.hook.text, durationSec: clip.hook.durationSec || 3 } : null,
         zoomKeyframes: clip.zoomKeyframes || [], templateId: clip.templateId, transcriptExact: job.transcriptExact ?? null, thumbnail: clip.thumbnail || job.source.thumbnail || null,
         outro: clip.outro || null, seo: clip.seo || null, cropBottom: clip.cropBottom || 0,
         audio: { muteOriginal: false, duckOriginal: true, cues: clip.audio?.aiHookVoice ? [cue(clip.audio.aiHookVoice, 0, this.store)] : [] },

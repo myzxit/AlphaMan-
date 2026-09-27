@@ -1,6 +1,6 @@
 // 보관함: 내가 만든 영상(쇼츠 · AI 재구성 · 롱폼 컷편집)을 모아 미리보기 · 다운로드 · 즐겨찾기 · 삭제
 import { get, patch, del, downloadUrl, getToken } from './api.js';
-import { esc, html, raw, toast, confirmDialog, fmtTime, fmtDate, qs, qsa, on } from './ui.js';
+import { esc, html, raw, toast, confirmDialog, promptDialog, fmtTime, fmtDate, qs, qsa, on } from './ui.js';
 import { openPreview } from './player.js';
 import { exactBadge } from './transcript.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
@@ -21,9 +21,11 @@ export const library = auth(async ({ view, params, navigate }) => {
   on(view, 'click', '[data-preview]', (e, t) => openPreview({ libraryId: t.dataset.preview }));
   bindSeoButtons(view);
   on(view, 'click', '[data-render]', (e, t) => { const [k, id] = t.dataset.render.split(':'); const it = items.find((x) => x.kind === k && x.refId === id); openRenderDialog({ kind: k, refId: id, libraryId: it?.id || null, title: it?.title || '' }); });
-  window.addEventListener('am:rendered', () => navigate(`${link({})}&r=${Date.now()}`), { once: true });
+  const onRendered = () => { if (location.hash.startsWith('#/library')) navigate(`${link({})}&r=${Date.now()}`); };
+  window.addEventListener('am:rendered', onRendered);
+  window.addEventListener('hashchange', () => window.removeEventListener('am:rendered', onRendered), { once: true });
   on(view, 'click', '[data-fav]', async (e, t) => { const it = items.find((x) => x.id === t.dataset.fav); try { await patch(`/api/library/${it.id}`, { favorite: !it.favorite }); it.favorite = !it.favorite; t.textContent = it.favorite ? '★' : '☆'; t.classList.toggle('active', it.favorite); } catch (err) { toast(err.message, 'error'); } });
-  on(view, 'click', '[data-rename]', async (e, t) => { const it = items.find((x) => x.id === t.dataset.rename); const title = prompt('새 제목', it.title); if (title && title !== it.title) { try { await patch(`/api/library/${it.id}`, { title }); navigate(`${link({})}&r=${Date.now()}`); } catch (err) { toast(err.message, 'error'); } } });
+  on(view, 'click', '[data-rename]', async (e, t) => { const it = items.find((x) => x.id === t.dataset.rename); if (!it) return; const title = await promptDialog('새 제목', it.title, { title: '이름 변경' }); if (title && title !== it.title) { try { await patch(`/api/library/${it.id}`, { title }); navigate(`${link({})}&r=${Date.now()}`); } catch (err) { toast(err.message, 'error'); } } });
   on(view, 'click', '[data-remove]', async (e, t) => { if (!(await confirmDialog('보관함에서 뺄까요? (원본 작업은 남습니다)'))) return; try { await del(`/api/library/${t.dataset.remove}`); t.closest('.library-card').remove(); toast('보관함에서 제거했습니다.'); } catch (err) { toast(err.message, 'error'); } });
   on(view, 'click', '[data-download]', async (e, t) => {
     const it = items.find((x) => x.id === t.dataset.download);

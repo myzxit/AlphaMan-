@@ -5,7 +5,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { ApiError } from './errors.js';
-import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run, ensureLocalFile, downloadYoutube, separateVocals } from './media.js';
+import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run, ensureLocalFile, downloadYoutube, separateVocals, ffPath } from './media.js';
 import { transcribe, semanticSplit } from './subtitles/stt.js';
 import { toASS } from './subtitles/format.js';
 import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
@@ -390,7 +390,7 @@ export class RemixEngine {
     const origWeight = rebuild.narration?.duckLevel === 0 ? '0.15' : '0.45';
     const narrMix = narrFiles.length ? `;[ac]${narrFiles.map((_, i) => `[n${i}]`).join('')}amix=inputs=${narrFiles.length + 1}:duration=first:dropout_transition=0:weights=${[origWeight, ...narrFiles.map(() => '1')].join(' ')}[amix]` : '';
     if (narrFiles.length) mixChain = '[amix]';
-    const filter = `${parts.join(';')};${labels.join('')}concat=n=${n}:v=1:a=1[vc][ac]${narrMix};[vc]subtitles='${assPath.replace(/'/g, "\\'")}'[vo];${mixChain}loudnorm=I=-14[ao]`;
+    const filter = `${parts.join(';')};${labels.join('')}concat=n=${n}:v=1:a=1[vc][ac]${narrMix};[vc]subtitles='${ffPath(assPath)}'[vo];${mixChain}loudnorm=I=-14[ao]`;
     const args = ['-y', ...inputs, '-filter_complex', filter, '-map', '[vo]', '-map', '[ao]', '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', out];
     if (job.source.path && which('ffmpeg')) {
       await ensureLocalFile(job.source);

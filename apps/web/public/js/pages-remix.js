@@ -1,6 +1,6 @@
 // AI 재구성(리믹스) + 내 목소리 TTS 페이지
 import { get, post, patch, del, uploadFile, downloadUrl, getToken } from './api.js';
-import { esc, html, raw, toast, modal, confirmDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, extractVoiceSample, qs, qsa, on } from './ui.js';
+import { esc, html, raw, toast, modal, confirmDialog, promptDialog, fmtTime, fmtDate, creditsLabel, readVideoMeta, extractVoiceSample, qs, qsa, on } from './ui.js';
 import { transcriptPanel, transcriptController, exactBadge } from './transcript.js';
 import { mountPlayer, getWithRetry } from './player.js';
 import { seoButtons, bindSeoButtons } from './pages-seo.js';
@@ -98,23 +98,27 @@ export const remixJob = auth(async ({ view, params, navigate }) => {
   let job = await get(`/api/remix/jobs/${params.id}`);
   let timer = null;
   bindRenderButtons(view, () => job.result?.plan?.title || job.source.title);
-  window.addEventListener('am:rendered', () => { get(`/api/remix/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); }, { once: true });
+  const onRendered = () => { if (!location.hash.startsWith(`#/remix/${job.id}`)) return; get(`/api/remix/jobs/${job.id}`).then((j) => { job = j; draw(); }).catch(() => {}); };
+  window.addEventListener('am:rendered', onRendered);
+  window.addEventListener('hashchange', () => window.removeEventListener('am:rendered', onRendered), { once: true });
+  // 클릭 핸들러는 한 번만 등록 (draw 는 폴링마다 다시 그려진다)
+  on(view, 'click', '[data-play-narr]', async (e, t) => { const line = job.result?.narration?.lines?.[Number(t.dataset.playNarr)]; if (line) playRender(line); });
+  on(view, 'click', '[data-export]', async (e, t) => {
+    const fmt = t.dataset.export;
+    const res = await fetch(downloadUrl(`/api/remix/jobs/${job.id}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } });
+    if ((res.headers.get('content-type') || '').includes('json') && fmt === 'mp4') { await res.json().catch(() => ({})); openRenderDialog({ kind: 'remix', refId: job.id, title: job.result?.plan?.title || job.source.title }); return; }
+    saveBlob(await res.blob(), `${job.id}.${fmt}`);
+  });
+  bindSeoButtons(view);
   const stepNames = { queued: '대기', ingest: '원본 가져오기', reference: '참고 영상 분석', transcribing: '음성 인식', cleaning: '원본 정리 (자막·효과음·배경음 제거)', planning: 'AI 구성 계획', rebuilding: '새 자막·효과음·내레이션', rendering: '렌더링', done: '완료', failed: '실패' };
   const draw = () => {
     const r = job.result;
     view.innerHTML = html`<div class="row row-between"><div><a href="#/remix" class="small">← AI 재구성</a><h1>${r?.plan?.title || job.source.title}</h1><div class="muted small">원본: ${job.source.title} · ${fmtTime(job.source.durationSec)} · 목표 ${job.options.targetMinutes}분 · ${job.minutesCharged}분 차감${job.reference ? raw(` · 참고: <a href="${esc(job.reference.url)}" target="_blank" rel="noopener">${esc(job.reference.title)}</a>`) : ''}</div></div>
       <div class="row">${job.status === 'done' ? raw('<a class="btn" href="#/library?kind=remix">📁 보관함</a>') : ''}<button class="btn" id="rj-regen" ${job.status === 'done' || job.status === 'failed' ? '' : 'disabled'}>다시 만들기 (${(job.minutesCharged / 2).toFixed(1)}분)</button><button class="btn btn-danger" id="rj-del">삭제</button></div></div>
       ${job.status !== 'done' ? raw(`<div class="card"><div class="row row-between"><b>${esc(stepNames[job.step] || job.step)}</b><span>${job.progress}%</span></div><div class="progress"><div style="width:${job.progress}%"></div></div><div class="log" style="margin-top:10px">${job.log.map((l) => `${esc(l.at.slice(11, 19))} [${esc(l.step)}] ${esc(l.message)}`).join('\n')}</div>${job.error ? `<p class="badge badge-danger">${esc(job.error)}</p>` : ''}</div>`) : raw(renderResult(job))}`;
-    if (job.status === 'done') { const host = qs('#rj-player'); if (host) getWithRetry(`/api/preview/remix/${job.id}`).then((spec) => mountPlayer(host, spec)).catch((err) => { host.innerHTML = `<div class="tiny muted">미리보기를 불러오지 못했습니다: ${esc(err.message)} <button class="btn btn-sm" onclick="location.reload()">다시 시도</button></div>`; }); bindSeoButtons(view); }
-    on(view, 'click', '[data-play-narr]', async (e, t) => { const line = job.result?.narration?.lines?.[Number(t.dataset.playNarr)]; if (line) playRender(line); });
+    if (job.status === 'done') { const host = qs('#rj-player'); if (host) getWithRetry(`/api/preview/remix/${job.id}`).then((spec) => mountPlayer(host, spec)).catch((err) => { host.innerHTML = `<div class="tiny muted">미리보기를 불러오지 못했습니다: ${esc(err.message)} <button class="btn btn-sm" onclick="location.reload()">다시 시도</button></div>`; }); }
     qs('#rj-regen').onclick = async () => { if (!(await confirmDialog(`다시 만들면 이용권 ${(job.minutesCharged / 2).toFixed(1)}분이 차감됩니다.`))) return; try { job = await post(`/api/remix/jobs/${job.id}/regenerate`); await window.AlphaManApp.refreshUser(); draw(); poll(); } catch (err) { toast(err.message, 'error'); } };
     qs('#rj-del').onclick = async () => { if (await confirmDialog('작업을 삭제할까요?')) { await del(`/api/remix/jobs/${job.id}`); navigate('/remix'); } };
-    on(view, 'click', '[data-export]', async (e, t) => {
-      const fmt = t.dataset.export;
-      const res = await fetch(downloadUrl(`/api/remix/jobs/${job.id}/export?format=${fmt}`), { headers: { Authorization: `Bearer ${getToken()}` } });
-      if ((res.headers.get('content-type') || '').includes('json') && fmt === 'mp4') { await res.json().catch(() => ({})); openRenderDialog({ kind: 'remix', refId: job.id, title: job.result?.plan?.title || job.source.title }); return; }
-      saveBlob(await res.blob(), `${job.id}.${fmt}`);
-    });
     const save = qs('#rj-save'); if (save) save.onclick = async () => {
       const subs = qs('#rj-subs').value.split('\n').map((l) => l.split('|')).filter((p) => p.length >= 3).map(([start, end, ...t]) => ({ start: Number(start), end: Number(end), text: t.join('|') }));
       const sfx = qs('#rj-sfx').value.split('\n').map((l) => l.split('|')).filter((p) => p.length >= 2).map(([at, name]) => ({ at: Number(at), name: name.trim() }));
@@ -225,6 +229,6 @@ export const voice = auth(async ({ view, state, navigate }) => {
   };
   on(view, 'change', '[data-fallback]', async (e, t) => { try { await patch(`/api/voice/profiles/${t.dataset.fallback}`, { fallbackVoiceId: t.value }); toast('대체 목소리를 저장했습니다. 다음 합성부터 적용됩니다.'); } catch (err) { toast(err.message, 'error'); } });
   on(view, 'click', '[data-del]', async (e, t) => { if (await confirmDialog('프로필을 삭제할까요?')) { await del(`/api/voice/profiles/${t.dataset.del}`); navigate(`/voice?r=${Date.now()}`); } });
-  on(view, 'click', '[data-rename]', async (e, t) => { const name = prompt('새 이름'); if (name) { await patch(`/api/voice/profiles/${t.dataset.rename}`, { name }); navigate(`/voice?r=${Date.now()}`); } });
+  on(view, 'click', '[data-rename]', async (e, t) => { const cur = profiles.find((p) => p.id === t.dataset.rename); const name = await promptDialog('새 이름', cur?.name || '', { title: '프로필 이름 변경' }); if (name && name.trim()) { try { await patch(`/api/voice/profiles/${t.dataset.rename}`, { name: name.trim() }); navigate(`/voice?r=${Date.now()}`); } catch (err) { toast(err.message, 'error'); } } });
 });
 

@@ -277,7 +277,10 @@ export class ShortsEngine {
       let vocalsPath = null;
       if (clip.audio?.voiceEnhance?.removeMusic && which('demucs')) { vocalsPath = job.vocalsPath || await separateVocals(job.source.path, path.join(this.outputDir, job.userId, 'stems')); if (vocalsPath) this.store.update('jobs', job.id, { vocalsPath }); }
       const hookAudio = clip.audio?.aiHookVoice?.audioPath || null;
-      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio, outro: clip.outro || null, hookAudio, vocalsPath, cropBottom: clip.cropBottom || 0 });
+      // 자막(ASS)을 파일로 써서 실제로 입힌다 (이전에는 만들어 두고 넘기지 않아 렌더 파일에 자막이 없었다). 무음 컷도 함께 적용
+      let subtitlePath = null;
+      if (clip.subtitles?.length && which('ffmpeg')) { try { subtitlePath = path.join(this.outputDir, job.userId, `${clip.id}.ass`); fs.mkdirSync(path.dirname(subtitlePath), { recursive: true }); fs.writeFileSync(subtitlePath, ass); } catch { subtitlePath = null; } }
+      result = await renderClip({ input: job.source.path, output: out, start: clip.start, end: clip.end, ratio: clip.ratio, outro: clip.outro || null, hookAudio, vocalsPath, cropBottom: clip.cropBottom || 0, subtitlePath, cuts: clip.cuts || [] });
     } else {
       result = { rendered: false, plan: { note: '유튜브 원본은 yt-dlp 로 내려받은 뒤 렌더링됩니다.', ratio: clip.ratio, start: clip.start, end: clip.end } };
     }
