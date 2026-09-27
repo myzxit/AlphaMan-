@@ -181,7 +181,8 @@ function keyTimes(kind, rec, D) {
 }
 
 // SVG 조합: 배경 이미지(있으면) + 스타일별 그라데이션/띠 + 큰 텍스트(외곽선) + 배지
-export function composeSvg({ width, height, image, headline, subline, style, palette, badge }) {
+// imageFx(선택): 원본 사진을 "새 사진처럼" 보이게 하는 효과 — mirror(좌우 반전) · zoom(살짝 확대) · saturate(채도) · tint(포인트 색 살짝 입히기). 지정하지 않으면 기존과 동일.
+export function composeSvg({ width, height, image, headline, subline, style, palette, badge, imageFx = null }) {
   const [accent, ink] = THUMB_PALETTES[palette] || THUMB_PALETTES.yellow;
   const vertical = height > width;
   const fontHead = Math.round(width / (vertical ? 9 : 11));
@@ -189,13 +190,20 @@ export function composeSvg({ width, height, image, headline, subline, style, pal
   const lines = wrap(headline, vertical ? 7 : 10);
   const subLines = subline ? wrap(subline, vertical ? 9 : 14) : [];
   const font = "'Black Han Sans','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif";
-  const bg = image ? `<image href="${esc(image)}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>` : `<rect width="${width}" height="${height}" fill="url(#bgGrad)"/>`;
+  const fx = imageFx && typeof imageFx === 'object' ? imageFx : null;
+  const zoom = fx ? Math.min(1.4, Math.max(1, Number(fx.zoom) || 1)) : 1;
+  const sat = fx ? Math.min(1.8, Math.max(0.5, Number(fx.saturate) || 1)) : 1;
+  const tf = fx ? `${fx.mirror ? `translate(${width} 0) scale(-1 1) ` : ''}${zoom !== 1 ? `translate(${(width - width * zoom) / 2} ${(height - height * zoom) / 2}) scale(${zoom})` : ''}`.trim() : '';
+  const fxFilter = sat !== 1 ? `<filter id="imgFx"><feColorMatrix type="saturate" values="${sat}"/></filter>` : '';
+  const imageTag = image ? `<image href="${esc(image)}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"${sat !== 1 ? ' filter="url(#imgFx)"' : ''}/>` : '';
+  const bg = image ? `${tf ? `<g transform="${tf}">${imageTag}</g>` : imageTag}${fx?.tint ? `<rect width="${width}" height="${height}" fill="${accent}" opacity=".10"/>` : ''}` : `<rect width="${width}" height="${height}" fill="url(#bgGrad)"/>`;
   const text = (x, y, anchor, size, fill, stroke, arr, weight = 900) => arr.map((l, i) => `<text x="${x}" y="${y + i * size * 1.12}" text-anchor="${anchor}" font-family="${font}" font-weight="${weight}" font-size="${size}" fill="${fill}" stroke="${stroke}" stroke-width="${Math.max(2, Math.round(size / 11))}" paint-order="stroke" stroke-linejoin="round">${esc(l)}</text>`).join('');
   let body = '';
   const pad = Math.round(width * 0.05);
   if (style === 'original-like' || style === 'bold') {
     const gradH = Math.round(height * (vertical ? 0.42 : 0.55));
-    const baseY = height - pad - (subLines.length ? subLines.length * fontSub * 1.12 : 0) - (lines.length - 1) * fontHead * 1.12;
+    // 첫 줄 기준선: 작은 문구가 있으면 큰 문구 줄 수 전체 + 간격 + 작은 문구 줄 수만큼 위로 올려 마지막 줄이 아래 여백 안에 들어오게 한다
+    const baseY = height - pad - (subLines.length ? lines.length * fontHead * 1.12 + fontSub * 0.2 + (subLines.length - 1) * fontSub * 1.12 : (lines.length - 1) * fontHead * 1.12);
     body = `<rect x="0" y="${height - gradH}" width="${width}" height="${gradH}" fill="url(#shade)"/>${text(pad, baseY, 'start', fontHead, style === 'original-like' ? accent : '#ffffff', '#000000', lines)}${subLines.length ? text(pad, baseY + lines.length * fontHead * 1.12 + fontSub * 0.2, 'start', fontSub, '#ffffff', '#000000', subLines, 700) : ''}`;
   } else if (style === 'big-number') {
     const num = (headline.match(/\d+/) || [''])[0];
@@ -212,7 +220,7 @@ export function composeSvg({ width, height, image, headline, subline, style, pal
     body = `<rect x="${pad}" y="${height - pad - fontSub * 1.7}" rx="${Math.round(fontSub * 0.4)}" width="${lw}" height="${Math.round(fontSub * 1.7)}" fill="${accent}" opacity=".95"/><text x="${pad + Math.round(pad * 0.6)}" y="${height - pad - Math.round(fontSub * 0.45)}" font-family="${font}" font-weight="900" font-size="${fontSub}" fill="${ink}">${esc(label)}</text>`;
   }
   const badgeSvg = badge ? `<rect x="${width - pad - 190}" y="${pad}" rx="14" width="190" height="56" fill="#ff0033"/><text x="${width - pad - 95}" y="${pad + 40}" text-anchor="middle" font-family="${font}" font-weight="900" font-size="30" fill="#fff">${esc(badge)}</text>` : '';
-  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".85"/></linearGradient><linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#0b1220"/></linearGradient></defs>${bg}${body}${badgeSvg}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs>${fxFilter}<linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".85"/></linearGradient><linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#0b1220"/></linearGradient></defs>${bg}${body}${badgeSvg}</svg>`;
 }
 
 function wrap(text, perLine) {

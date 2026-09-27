@@ -182,6 +182,29 @@ export function buildApi(app) {
   r.post('/api/thumbnail/:kind/:refId/frame', async (ctx) => { const { user, kind, refId } = seoRef(ctx); return await app.thumbnail.addUserFrame(user.id, kind, refId, { buffer: ctx.raw, at: ctx.headers['x-at'] != null ? Number(ctx.headers['x-at']) : null, mime: ctx.headers['content-type'] || 'image/jpeg' }); });
   r.get('/api/thumbnail/:kind/:refId/image.svg', async (ctx) => { const { user, kind, refId } = seoRef(ctx); const svg = await app.thumbnail.svgInline(user.id, kind, refId); ctx.res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'private, max-age=300', 'Access-Control-Allow-Origin': '*' }); ctx.res.end(svg); return { _sent: true }; });
   r.get('/api/thumbnail/:kind/:refId/frame/:idx', async (ctx) => { const { user, kind, refId } = seoRef(ctx); const f = app.thumbnail.frameFile(user.id, kind, refId, ctx.params.idx); if (f.redirect) { ctx.res.writeHead(302, { Location: f.redirect }); ctx.res.end(); return { _sent: true }; } return { _file: f.path, mime: f.mime, filename: path.basename(f.path), inline: true }; });
+  // ---- 썸네일·제목·태그 리믹스: 링크(유튜브)/파일 → 원본 썸네일·제목·태그 → 원본과 거의 비슷한 새 썸네일(SVG/PNG 다운로드)·제목·태그. 이용권 차감 없음 ----
+  r.get('/api/metaremix', async (ctx) => app.metaremix.list(auth(ctx).id));
+  r.post('/api/metaremix', async (ctx) => {
+    const user = auth(ctx);
+    rateLimit(`metaremix:${user.id}`, 40, 10 * 60 * 1000);
+    const rec = await app.metaremix.create(user.id, ctx.body || {});
+    app.activity.log(user.id, { kind: 'metaremix', refId: rec.id, title: rec.selected?.title || rec.original.title, result: { engine: rec.result?.engine, titles: rec.result?.titles?.length || 0, tags: rec.result?.tags?.length || 0 } });
+    return rec;
+  });
+  r.get('/api/metaremix/:id', async (ctx) => app.metaremix.get(auth(ctx).id, ctx.params.id));
+  r.put('/api/metaremix/:id', async (ctx) => app.metaremix.update(auth(ctx).id, ctx.params.id, ctx.body || {}));
+  r.post('/api/metaremix/:id/regenerate', async (ctx) => { const user = auth(ctx); rateLimit(`metaremix:${user.id}`, 40, 10 * 60 * 1000); return app.metaremix.regenerate(user.id, ctx.params.id, ctx.body || {}); });
+  r.delete('/api/metaremix/:id', async (ctx) => app.metaremix.remove(auth(ctx).id, ctx.params.id));
+  r.get('/api/metaremix/:id/image.svg', async (ctx) => {
+    const svg = await app.metaremix.svgInline(auth(ctx).id, ctx.params.id);
+    ctx.res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'private, max-age=300', 'Access-Control-Allow-Origin': '*', ...(ctx.query.download === '1' ? { 'Content-Disposition': `attachment; filename="thumbnail-${ctx.params.id.slice(0, 8)}.svg"` } : {}) });
+    ctx.res.end(svg); return { _sent: true };
+  });
+  r.get('/api/metaremix/:id/original', async (ctx) => {
+    const f = app.metaremix.imageFile(auth(ctx).id, ctx.params.id);
+    if (f.redirect) { ctx.res.writeHead(302, { Location: f.redirect }); ctx.res.end(); return { _sent: true }; }
+    return { _file: f.path, mime: f.mime, filename: `original-${ctx.params.id.slice(0, 8)}${f.mime.includes('png') ? '.png' : '.jpg'}`, inline: ctx.query.download !== '1' };
+  });
   // 업로드한 원본 스트리밍 (미리보기 플레이어 · 브라우저 대본 추출용). 본인 파일만.
   r.get('/api/uploads/:id/stream', async (ctx) => {
     const up = app.store.get('uploads', ctx.params.id);

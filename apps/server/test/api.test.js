@@ -268,3 +268,34 @@ test('대본 API: 유튜브 자막 미리 가져오기(네트워크 off 면 404 
     assert.equal(anon.status, 401);
   } finally { await t.close(); }
 });
+
+test('썸네일·제목·태그 리믹스 API: 생성(파일 장면) · 조회 · 수정 · SVG/원본 이미지 다운로드 · 다시 생성 · 삭제 · 권한', async () => {
+  const t = await boot();
+  try {
+    const su = await t.call('POST', '/api/auth/signup', { email: 'mr@test.com', password: 'secret1', name: 'MR' });
+    const tok = su.data.token;
+    const png = `data:image/png;base64,${Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64')}`;
+    const c = await t.call('POST', '/api/metaremix', { filename: 'my_cooking_vlog.mp4', title: '자취생 초간단 요리 5가지', tags: '자취요리, 레시피', frameDataUrl: png, width: 1080, height: 1920, options: { style: 'bold', palette: 'blue' } }, tok);
+    assert.equal(c.status, 200, JSON.stringify(c.data)); assert.ok(c.data.result.titles.length >= 3); assert.equal(c.data.thumb.width, 1080); assert.equal(c.data.thumb.height, 1920); assert.equal(c.data.thumb.style, 'bold'); assert.equal(c.data.thumb.palette, 'blue');
+    const list = await t.call('GET', '/api/metaremix', undefined, tok);
+    assert.equal(list.data.length, 1); assert.equal(list.data[0].id, c.data.id);
+    const one = await t.call('GET', `/api/metaremix/${c.data.id}`, undefined, tok);
+    assert.equal(one.status, 200); assert.equal(one.data.original.title, '자취생 초간단 요리 5가지');
+    const svg = await fetch(`${t.base}/api/metaremix/${c.data.id}/image.svg?download=1`, { headers: { authorization: `Bearer ${tok}` } });
+    assert.equal(svg.status, 200); assert.match(svg.headers.get('content-type'), /svg/); assert.match(svg.headers.get('content-disposition') || '', /attachment/); assert.match(await svg.text(), /data:image\/png;base64,/);
+    const orig = await fetch(`${t.base}/api/metaremix/${c.data.id}/original?download=1`, { headers: { authorization: `Bearer ${tok}` } });
+    assert.equal(orig.status, 200); assert.match(orig.headers.get('content-type'), /image\/png/);
+    const up = await t.call('PUT', `/api/metaremix/${c.data.id}`, { headline: '문구', palette: 'red', title: '고른 제목' }, tok);
+    assert.equal(up.data.thumb.headline, '문구'); assert.equal(up.data.thumb.palette, 'red'); assert.equal(up.data.selected.title, '고른 제목');
+    const rg = await t.call('POST', `/api/metaremix/${c.data.id}/regenerate`, {}, tok);
+    assert.equal(rg.status, 200); assert.equal(rg.data.seed, 1);
+    const other = await t.call('POST', '/api/auth/signup', { email: 'mr2@test.com', password: 'secret1', name: 'MR2' });
+    assert.equal((await t.call('GET', `/api/metaremix/${c.data.id}`, undefined, other.data.token)).status, 404, '다른 사용자는 볼 수 없다');
+    assert.equal((await t.call('GET', '/api/metaremix')).status, 401);
+    assert.equal((await t.call('POST', '/api/metaremix', { url: 'https://example.com/not-youtube' }, tok)).status, 400);
+    const badImg = await t.call('POST', '/api/metaremix', { title: 'x', frameDataUrl: 'data:text/plain;base64,QUJD' }, tok);
+    assert.equal(badImg.status, 400);
+    assert.equal((await t.call('DELETE', `/api/metaremix/${c.data.id}`, undefined, tok)).data.ok, true);
+    assert.equal((await t.call('GET', `/api/metaremix/${c.data.id}`, undefined, tok)).status, 404);
+  } finally { await t.close(); }
+});
