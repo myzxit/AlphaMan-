@@ -1,7 +1,7 @@
 // 롱폼 컷편집: 롱폼 영상 전체에 무음 구간 제거 + 자동 자막 + 챕터 생성 (알파컷 "서비스 > 롱폼 컷편집")
 import { ApiError } from './errors.js';
 import { parseYoutubeUrl, fetchYoutubeMeta, probe, ensureLocalFile } from './media.js';
-import { transcribe, semanticSplit, assertTranscriptAvailable } from './subtitles/stt.js';
+import { transcribe, semanticSplit, assertTranscriptAvailable, prefetchLinkTranscript } from './subtitles/stt.js';
 
 export class LongformEngine {
   constructor({ store, credits, ai, notifications, library = null, seo = null, thumbnail = null, activity = null }) {
@@ -25,6 +25,7 @@ export class LongformEngine {
       source = { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, durationSec: meta.durationSec || 900, thumbnail: meta.thumbnail, tags: meta.tags || [], description: meta.description || '' };
     }
     const opts = { removeSilence: true, silenceThreshold: 0.7, autoSubtitles: true, chapters: true, jumpCuts: true, language: 'ko', ...options };
+    await prefetchLinkTranscript(source, opts); // 유튜브 자막을 직접 가져와 "원본 대본 그대로" (yt-dlp 없이도)
     assertTranscriptAvailable({ source, filePath: source.path || null, transcript: Array.isArray(transcript) && transcript.length ? transcript : opts.transcript, transcriptText: transcriptText || opts.transcriptText }); // 대본을 구할 수 없으면 차감 전에 안내
     const minutes = Math.round((source.durationSec / 60) * 100) / 100;
     const job = this.store.insert('longformJobs', { userId, source, options: opts, minutesCharged: minutes, lastCharged: minutes, status: 'processing', progress: 10, result: null });
@@ -53,7 +54,7 @@ export class LongformEngine {
 
   async _run(jobId) {
     const job = this.store.get('longformJobs', jobId);
-    const stt = await transcribe({ filePath: job.source.path, durationSec: job.source.durationSec, language: job.options.language, title: job.source.title, source: job.source, transcript: job.options.transcript || null, transcriptText: job.options.transcriptText || '' });
+    const stt = await transcribe({ filePath: job.source.path, durationSec: job.source.durationSec, language: job.options.language, title: job.source.title, source: job.source, transcript: job.options.transcript || null, transcriptText: job.options.transcriptText || '', transcriptEngine: job.options.transcriptEngine || null });
     this.activity?.checkCancelled('longformJobs', jobId);
     this.store.update('longformJobs', jobId, { progress: 50 });
     this.activity?.progress('longform', jobId, 50, 'analyzing');

@@ -139,6 +139,7 @@
 | 무료 TTS 실제 MP3 (서버리스 포함): Edge 읽어주기 버전 거부(403) 자동 우회 · 시계 보정 | `edgetts.js` (버전 목록 순회, Date 헤더 skew) | ✓ | ✓ |
 | 썸네일 이미지 표시: SVG 안에 배경 사진 base64 인라인, 캡처 프레임 Blob 보관 | `thumbnail.js svgInline/_loadImage/addUserFrame` | ✓ | ✓ |
 | 재구성: 원본 박힌 자막 위치(자동 감지/하단/중앙/상단) → 브라우저 렌더러 프레임 분석 후 크롭/블러, ffmpeg 는 crop/boxblur | `remix.js subtitleRegionFor/planCleaning/render`, `render-browser.js detectSubtitleBand`, `player.js .player-blur` | ✓ | ✓ |
+| 유튜브 링크 대본 자동 가져오기 (yt-dlp 없이, 서버리스 포함): InnerTube 자막 트랙 → timedtext 파싱, 길이·채널도 조회. 자막 없는 영상만 붙여넣기 안내(422, 미차감) | `media.js fetchYoutubeInnertube/fetchYoutubeMeta`, `stt.js fetchYoutubeCaptionsDirect/parseTimedTextXml/prefetchLinkTranscript`, 쇼츠·재구성·롱폼 생성 | ✓ | ✓ |
 | 재구성: 새 자막을 원본 자막과 비슷하게 — 프레임 분석으로 원본 자막 위치·크기·글자색·외곽선 추정 후 같은 모양으로 입힘 (브라우저 캔버스 · ffmpeg ASS 스타일 · 미리보기) | `subtitles/burned.js analyzeSubtitleFrames/hexToAss`, `media.js detectBurnedSubtitleStyle`, `remix.js (subtitleLook)`, `format.js toASS(alignment/marginV)`, `render-browser.js`, `player.js` | ✓ | ✓ |
 | 재구성: 전체 더빙(dub) — 자막 전체를 선택한 목소리로 읽고 원본 목소리 제거, 배타 재생·덕킹 레벨, 합성 문장 캐시(서버리스 복구 시 재합성 방지) | `remix.js dubLines/rebuild`, `library.js previewSpec(audio.mode/exclusiveCues/duckLevel)`, `render-browser.js startCue` | ✓ | ✓ |
 | 내 목소리 프로필 대체 목소리: 복제 엔진이 없으면 지정한 무료 신경망 목소리로 실제 MP3 생성 | `voice.js fallbackVoiceFor/update` (`PATCH /api/voice/profiles/:id {fallbackVoiceId}`), 내 목소리 페이지 프로필 카드 | ✓ | ✓ |

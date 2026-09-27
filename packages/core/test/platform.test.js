@@ -9,6 +9,7 @@ process.env.ALPHAMAN_AI = 'off';
 process.env.ALPHAMAN_ALLOW_SIMULATED_STT = '1';
 process.env.ALPHAMAN_JOB_SPEED = '1000';
 process.env.ALPHAMAN_TTS_DETECT = 'off';
+process.env.ALPHAMAN_YT_CAPTIONS = 'off'; // 테스트에서는 유튜브 자막 네트워크 조회 생략
 process.env.ALPHAMAN_FAKE_PAYMENTS = '1';
 
 function app() { return new AlphaMan({ memory: true, platform: 'test' }); }
@@ -543,4 +544,13 @@ test('원본 자막과 비슷한 새 자막: 프레임 분석으로 띠 위치·
   assert.equal(done.result.template.look, 'original');
   const spec = a.library.previewSpec(user.id, 'remix', job.id);
   assert.equal(spec.subtitleLook, 'original'); assert.ok('originalStyle' in spec);
+});
+
+test('유튜브 자막 직접 가져오기: timedtext XML 파싱, 링크 작업은 자막을 미리 옵션에 넣는다(네트워크 off 면 건너뜀)', async () => {
+  const { parseTimedTextXml, prefetchLinkTranscript } = await import('../src/subtitles/stt.js');
+  const segs = parseTimedTextXml('<?xml version="1.0"?><timedtext format="3"><body><p t="1000" d="2000">안녕 &amp; 반가워</p><p t="3500" d="1500"><s>단어</s><s> 태그</s></p><p t="9000">텍스트만</p></body></timedtext>');
+  assert.deepEqual(segs, [{ start: 1, end: 3, text: '안녕 & 반가워' }, { start: 3.5, end: 5, text: '단어 태그' }, { start: 9, end: 12, text: '텍스트만' }]);
+  const opts = { transcriptText: 'x' };
+  assert.equal(await prefetchLinkTranscript({ type: 'youtube', videoId: 'abcdefghijk' }, opts), null, '이미 대본이 있으면 건너뜀');
+  assert.equal(await prefetchLinkTranscript({ type: 'youtube', videoId: 'abcdefghijk' }, {}), null, 'ALPHAMAN_YT_CAPTIONS=off 면 조회하지 않음');
 });

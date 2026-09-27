@@ -6,7 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { ApiError } from './errors.js';
 import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoMeta, which, run, ensureLocalFile, downloadYoutube, separateVocals, ffPath, detectBurnedSubtitleStyle } from './media.js';
-import { transcribe, semanticSplit, assertTranscriptAvailable } from './subtitles/stt.js';
+import { transcribe, semanticSplit, assertTranscriptAvailable, prefetchLinkTranscript } from './subtitles/stt.js';
 import { toASS } from './subtitles/format.js';
 import { hexToAss } from './subtitles/burned.js';
 import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
@@ -96,6 +96,7 @@ export class RemixEngine {
       reference = { url: ref.url, platform: ref.platform, videoId: ref.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec: meta.durationSec || (isShorts ? 45 : null), isShorts, chapters: meta.chapters || [], tags: meta.tags || [], description: meta.description || '' };
     }
 
+    await prefetchLinkTranscript(source, opts); // 유튜브 자막을 직접 가져와 "원본 대본 그대로" (yt-dlp 없이도)
     assertTranscriptAvailable({ source, filePath: source.path || null, transcript: opts.transcript, transcriptText: opts.transcriptText }); // 대본을 구할 수 없으면 차감 전에 안내
     const minutes = Math.max(0.5, Math.round((source.durationSec / 60) * 100) / 100);
     const job = this.store.insert('remixJobs', {
@@ -149,7 +150,7 @@ export class RemixEngine {
     }
 
     this._log(jobId, 'transcribing', 26, '원본 음성을 인식해 대본을 만드는 중');
-    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: opts.language, title: source.title, source, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '' });
+    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: opts.language, title: source.title, source, transcript: opts.transcript || null, transcriptText: opts.transcriptText || '', transcriptEngine: opts.transcriptEngine || null });
     const genre = detectGenre(source.title, stt.segments.map((s) => s.text).join(' '));
     await this._wait(300);
 

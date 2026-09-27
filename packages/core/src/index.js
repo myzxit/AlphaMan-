@@ -98,7 +98,7 @@ export class AlphaMan {
       tools: toolAvailability(), ai: await this.ai.status(), voiceProviders: this.voice.providers(), freeVoices: this.voice.freeVoices(), remixLimits: REMIX_LIMITS, libraryKinds: LIBRARY_KINDS, thumbStyles: THUMB_STYLES, thumbPalettes: THUMB_PALETTES,
       projectKinds: Object.fromEntries(Object.entries(PROJECT_KINDS).map(([k, v]) => [k, v.label])), activityKinds: ACTIVITY_KINDS, mediaCategories: MEDIA_CATEGORIES, templateKinds: TEMPLATE_KINDS, payments: this.payments.config(), uploadLimits: UPLOAD_LIMITS,
       // 대본 정확도: 브라우저 Whisper(파일) · 붙여넣은 대본 · 서버 whisper · yt-dlp 유튜브 자막만 사용하고, 추정 대본은 만들지 않는다
-      transcript: { simulatedAllowed: process.env.ALPHAMAN_ALLOW_SIMULATED_STT === '1', serverWhisper: Boolean(toolAvailability().whisper), youtubeCaptions: Boolean(toolAvailability().ytdlp) },
+      transcript: { simulatedAllowed: process.env.ALPHAMAN_ALLOW_SIMULATED_STT === '1', serverWhisper: Boolean(toolAvailability().whisper), youtubeCaptions: process.env.ALPHAMAN_YT_CAPTIONS !== 'off' || Boolean(toolAvailability().ytdlp) }, // 유튜브 자막은 yt-dlp 없이도 직접 가져온다
       adminEmail: ADMIN_ACCOUNT.email,
       uploadMaxBytes: process.env.ALPHAMAN_UPLOAD_MAX_BYTES ? Number(process.env.ALPHAMAN_UPLOAD_MAX_BYTES) : (process.env.VERCEL ? 4.5 * 1024 * 1024 : 2 * 1024 * 1024 * 1024),
       serverless: Boolean(process.env.VERCEL),

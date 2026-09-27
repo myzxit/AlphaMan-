@@ -160,6 +160,8 @@ export async function fetchYoutubeMeta(videoId) {
       return { title: j.title, durationSec: j.duration, channel: j.uploader || j.channel, thumbnail: j.thumbnail, source: 'yt-dlp', language: j.language || 'ko', chapters: (j.chapters || []).map((c) => ({ start: c.start_time, end: c.end_time, title: c.title })), tags: j.tags || [], description: j.description || '' };
     } catch { /* fallthrough */ }
   }
+  // yt-dlp 가 없으면(웹사이트 서버리스) InnerTube 로 길이·채널·설명까지 얻는다 → 이용권 차감이 추정 길이가 아닌 실제 길이 기준이 된다
+  if (process.env.ALPHAMAN_YT_CAPTIONS !== 'off') try { const it = await fetchYoutubeInnertube(videoId); if (it.durationSec) return { title: it.title, durationSec: it.durationSec, channel: it.channel, thumbnail: it.thumbnail, source: 'innertube', language: 'ko', tags: it.tags, description: it.description }; } catch { /* oEmbed 로 */ }
   try {
     const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, { signal: AbortSignal.timeout(4000) });
     if (res.ok) {
@@ -237,4 +239,24 @@ function runBinary(bin, args) {
     p.on('error', reject);
     p.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(err || `${bin} exit ${code}`))));
   });
+}
+
+// 유튜브 InnerTube(앱 내부 API): yt-dlp 없이도 제목·길이·채널·썸네일과 자막 트랙 목록을 얻는다 (서버리스에서도 동작)
+export async function fetchYoutubeInnertube(videoId, { hl = 'ko' } = {}) {
+  const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip', 'x-youtube-client-name': '3', 'x-youtube-client-version': '20.10.38' },
+    body: JSON.stringify({ context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38', androidSdkVersion: 30, hl, gl: 'KR' } }, videoId, contentCheckOk: true, racyCheckOk: true }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`innertube ${res.status}`);
+  const j = await res.json();
+  if (j.playabilityStatus?.status && j.playabilityStatus.status !== 'OK') throw new Error(`innertube ${j.playabilityStatus.status}: ${j.playabilityStatus.reason || ''}`);
+  const v = j.videoDetails || {};
+  const thumbs = v.thumbnail?.thumbnails || [];
+  return {
+    title: v.title || `YouTube 영상 ${videoId}`, durationSec: Number(v.lengthSeconds) || null, channel: v.author || null, thumbnail: thumbs.length ? thumbs[thumbs.length - 1].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    description: v.shortDescription || '', tags: v.keywords || [], source: 'innertube', language: 'ko',
+    captionTracks: (j.captions?.playerCaptionsTracklistRenderer?.captionTracks || []).map((t) => ({ url: t.baseUrl, lang: t.languageCode, kind: t.kind || null, name: t.name?.simpleText || t.name?.runs?.map((r) => r.text).join('') || '' })),
+  };
 }

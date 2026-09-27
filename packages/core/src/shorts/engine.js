@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { ApiError } from '../errors.js';
 import { parseYoutubeUrl, fetchYoutubeMeta, probe, validateVideoMeta, renderClip, ensureLocalFile, downloadYoutube, separateVocals, which } from '../media.js';
-import { transcribe, semanticSplit, assertTranscriptAvailable } from '../subtitles/stt.js';
+import { transcribe, semanticSplit, assertTranscriptAvailable, prefetchLinkTranscript } from '../subtitles/stt.js';
 import { toASS, exportSubtitles } from '../subtitles/format.js';
 import { TEMPLATES, GENRES, RATIOS, detectGenre, templateFor } from './templates.js';
 
@@ -49,10 +49,10 @@ export class ShortsEngine {
     const yt = parseYoutubeUrl(url);
     const meta = await fetchYoutubeMeta(yt.id);
     const durationSec = meta.durationSec || Number(options.estimatedDurationSec) || 600;
-    return this._create(userId, {
-      source: { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec, tags: meta.tags || [], description: meta.description || '' },
-      options: withTranscript(options, transcript, transcriptText),
-    });
+    const source = { type: 'youtube', url: yt.url, videoId: yt.id, title: meta.title, channel: meta.channel, thumbnail: meta.thumbnail, durationSec, tags: meta.tags || [], description: meta.description || '' };
+    const opts = withTranscript(options, transcript, transcriptText);
+    await prefetchLinkTranscript(source, opts); // 유튜브 자막을 직접 가져와 "원본 대본 그대로" (yt-dlp 없이도)
+    return this._create(userId, { source, options: opts });
   }
 
   async createFromUpload(userId, { uploadId, options = {}, transcript = null, transcriptText = '' }) {
@@ -113,7 +113,7 @@ export class ShortsEngine {
     } else if (source.path) await ensureLocalFile(source);
     await this._wait(400);
     this._log(jobId, 'transcribing', 25, '음성을 인식해 대본을 만드는 중 (Whisper)');
-    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: options.language, title: source.title, source, transcript: options.transcript || null, transcriptText: options.transcriptText || '' });
+    const stt = await transcribe({ filePath: source.path, durationSec: source.durationSec, language: options.language, title: source.title, source, transcript: options.transcript || null, transcriptText: options.transcriptText || '', transcriptEngine: options.transcriptEngine || null });
     await this._wait(400);
     this._log(jobId, 'analyzing', 45, 'AI가 하이라이트 구간을 찾는 중');
     const genre = options.genre && GENRES.some((g) => g.id === options.genre) ? options.genre : detectGenre(source.title, stt.segments.map((s) => s.text).join(' '));
