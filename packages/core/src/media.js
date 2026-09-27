@@ -161,7 +161,7 @@ export async function fetchYoutubeMeta(videoId) {
     } catch { /* fallthrough */ }
   }
   // yt-dlp 가 없으면(웹사이트 서버리스) InnerTube 로 길이·채널·설명까지 얻는다 → 이용권 차감이 추정 길이가 아닌 실제 길이 기준이 된다
-  if (process.env.ALPHAMAN_YT_CAPTIONS !== 'off') try { const it = await fetchYoutubeInnertube(videoId); if (it.durationSec) return { title: it.title, durationSec: it.durationSec, channel: it.channel, thumbnail: it.thumbnail, source: 'innertube', language: 'ko', tags: it.tags, description: it.description }; } catch { /* oEmbed 로 */ }
+  if (process.env.ALPHAMAN_YT_CAPTIONS !== 'off') try { const it = await fetchYoutubeInnertube(videoId, { needCaptions: false }); if (it.durationSec) return { title: it.title, durationSec: it.durationSec, channel: it.channel, thumbnail: it.thumbnail, source: 'innertube', language: 'ko', tags: it.tags, description: it.description }; } catch { /* oEmbed 로 */ }
   try {
     const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, { signal: AbortSignal.timeout(4000) });
     if (res.ok) {
@@ -241,22 +241,47 @@ function runBinary(bin, args) {
   });
 }
 
-// 유튜브 InnerTube(앱 내부 API): yt-dlp 없이도 제목·길이·채널·썸네일과 자막 트랙 목록을 얻는다 (서버리스에서도 동작)
-export async function fetchYoutubeInnertube(videoId, { hl = 'ko' } = {}) {
-  const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'user-agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip', 'x-youtube-client-name': '3', 'x-youtube-client-version': '20.10.38' },
-    body: JSON.stringify({ context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38', androidSdkVersion: 30, hl, gl: 'KR' } }, videoId, contentCheckOk: true, racyCheckOk: true }),
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) throw new Error(`innertube ${res.status}`);
-  const j = await res.json();
-  if (j.playabilityStatus?.status && j.playabilityStatus.status !== 'OK') throw new Error(`innertube ${j.playabilityStatus.status}: ${j.playabilityStatus.reason || ''}`);
+// 유튜브 InnerTube(앱 내부 API): yt-dlp 없이도 제목·길이·채널·썸네일과 자막 트랙 목록을 얻는다 (서버리스에서도 동작).
+// 클라이언트를 바꿔가며(ANDROID → IOS → WEB) 시도하고, 모두 자막 트랙을 주지 않으면 시청 페이지의 ytInitialPlayerResponse 를 마지막으로 읽는다
+const YT_CLIENTS = [
+  { name: 'ANDROID', ctx: { clientName: 'ANDROID', clientVersion: '20.10.38', androidSdkVersion: 30 }, headers: { 'user-agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip', 'x-youtube-client-name': '3', 'x-youtube-client-version': '20.10.38' } },
+  { name: 'IOS', ctx: { clientName: 'IOS', clientVersion: '20.10.4', deviceMake: 'Apple', deviceModel: 'iPhone16,2', osName: 'iPhone', osVersion: '18.3.2.22D82' }, headers: { 'user-agent': 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)', 'x-youtube-client-name': '5', 'x-youtube-client-version': '20.10.4' } },
+  { name: 'WEB', ctx: { clientName: 'WEB', clientVersion: '2.20250312.04.00' }, headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36', 'x-youtube-client-name': '1', 'x-youtube-client-version': '2.20250312.04.00' } },
+];
+function innertubeShape(j, videoId, via) {
   const v = j.videoDetails || {};
   const thumbs = v.thumbnail?.thumbnails || [];
   return {
     title: v.title || `YouTube 영상 ${videoId}`, durationSec: Number(v.lengthSeconds) || null, channel: v.author || null, thumbnail: thumbs.length ? thumbs[thumbs.length - 1].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-    description: v.shortDescription || '', tags: v.keywords || [], source: 'innertube', language: 'ko',
+    description: v.shortDescription || '', tags: v.keywords || [], source: `innertube:${via}`, language: 'ko',
     captionTracks: (j.captions?.playerCaptionsTracklistRenderer?.captionTracks || []).map((t) => ({ url: t.baseUrl, lang: t.languageCode, kind: t.kind || null, name: t.name?.simpleText || t.name?.runs?.map((r) => r.text).join('') || '' })),
   };
+}
+export async function fetchYoutubeInnertube(videoId, { hl = 'ko', needCaptions = true } = {}) {
+  let best = null; let lastErr = null;
+  for (const c of YT_CLIENTS) {
+    try {
+      const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...c.headers },
+        body: JSON.stringify({ context: { client: { ...c.ctx, hl, gl: 'KR' } }, videoId, contentCheckOk: true, racyCheckOk: true }), signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) { lastErr = new Error(`innertube ${c.name} ${res.status}`); continue; }
+      const j = await res.json();
+      if (j.playabilityStatus?.status && j.playabilityStatus.status !== 'OK') { lastErr = new Error(`innertube ${c.name} ${j.playabilityStatus.status}: ${j.playabilityStatus.reason || ''}`); continue; }
+      const info = innertubeShape(j, videoId, c.name);
+      if (!best) best = info;
+      if (!needCaptions || info.captionTracks.length) return info;
+    } catch (err) { lastErr = err; }
+  }
+  // 시청 페이지 폴백 (자막 트랙이 필요한데 앱 클라이언트가 안 줄 때)
+  if (needCaptions) {
+    try {
+      const res = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=${hl}`, { headers: { 'user-agent': YT_CLIENTS[2].headers['user-agent'], 'accept-language': `${hl},en;q=0.8`, cookie: 'CONSENT=YES+1; SOCS=CAI' }, signal: AbortSignal.timeout(8000) });
+      const html = await res.text();
+      const m = /ytInitialPlayerResponse\s*=\s*(\{.+?\});(?:\s*var|\s*<\/script>)/s.exec(html);
+      if (m) { const info = innertubeShape(JSON.parse(m[1]), videoId, 'watch'); if (info.captionTracks.length || !best) return info; }
+    } catch (err) { lastErr = err; }
+  }
+  if (best) return best;
+  throw lastErr || new Error('innertube failed');
 }

@@ -250,3 +250,21 @@ test('API: 브라우저 렌더 업로드(조각) → /api/library/:id/video 스�
     assert.equal(svg.status, 200); assert.match(await svg.text(), /data:image\/png;base64,/);
   } finally { await t.close(); }
 });
+
+test('대본 API: 유튜브 자막 미리 가져오기(네트워크 off 면 404 안내) · 원본과 비슷하게 다시 쓰기', async () => {
+  const t = await boot();
+  try {
+    const su = await t.call('POST', '/api/auth/signup', { email: 'tr@test.com', password: 'secret1', name: 'T' });
+    const tok = su.data.token;
+    const yt = await t.call('GET', '/api/transcript/youtube?url=https://youtu.be/abcdefghijk&language=ko', undefined, tok);
+    assert.equal(yt.status, 404); assert.ok(/자막/.test(yt.data.error));
+    const badUrl = await t.call('GET', '/api/transcript/youtube?url=https://example.com/x', undefined, tok);
+    assert.equal(badUrl.status, 400);
+    const rw = await t.call('POST', '/api/transcript/rewrite', { text: '0:00\n안녕하세요 여러분 정말 반갑습니다.\n0:03\n오늘은 중요한 방법을 알려드릴게요.', language: 'ko' }, tok);
+    assert.equal(rw.status, 200); assert.equal(rw.data.segments.length, 2); assert.ok(rw.data.engine); assert.ok(rw.data.segments.every((s) => s.originalText));
+    const empty = await t.call('POST', '/api/transcript/rewrite', { segments: [] }, tok);
+    assert.equal(empty.status, 400);
+    const anon = await t.call('POST', '/api/transcript/rewrite', { text: 'x' });
+    assert.equal(anon.status, 401);
+  } finally { await t.close(); }
+});

@@ -360,6 +360,28 @@ export function buildApi(app) {
   r.post('/api/client-errors', async (ctx) => { rateLimit(`cerr:${clientIp(ctx.req)}`, 60, 10 * 60 * 1000); const b = ctx.body || {}; app.errors.log({ level: 'error', source: 'client', message: b.message, stack: b.stack, route: b.route, userId: ctx.user?.id || null, meta: { ua: String(ctx.headers['user-agent'] || '').slice(0, 200) } }); return { ok: true }; });
 
   // ---- 무료 도구 ----
+  // 대본: 유튜브 링크의 자막을 미리 가져오기 (패널이 링크 입력 즉시 호출) · 원본과 비슷하게 다시 쓰기
+  r.get('/api/transcript/youtube', async (ctx) => {
+    auth(ctx);
+    const { parseVideoUrl } = await import('@alphaman/core');
+    const { fetchYoutubeCaptionsDirect } = await import('@alphaman/core');
+    const parsed = parseVideoUrl(String(ctx.query.url || ''));
+    if (parsed.platform !== 'youtube') throw new ApiError(400, '유튜브 링크만 자막을 가져올 수 있습니다.');
+    const cap = await fetchYoutubeCaptionsDirect(parsed.id, String(ctx.query.language || 'ko'));
+    if (!cap) throw new ApiError(404, '이 영상에는 자막(자동 생성 포함)이 없거나 가져오지 못했습니다. 대본을 붙여넣거나 영상 파일을 올려주세요.');
+    return { engine: cap.engine, language: cap.language, kind: cap.kind, tracks: cap.tracks, segments: cap.segments.map((s) => ({ start: s.start, end: s.end, text: s.text })) };
+  });
+  r.post('/api/transcript/rewrite', async (ctx) => {
+    auth(ctx);
+    rateLimit(`rewrite:${ctx.user.id}`, 60, 10 * 60 * 1000);
+    const { rewriteSegments, parseTranscriptText } = await import('@alphaman/core');
+    let segs = Array.isArray(ctx.body.segments) ? ctx.body.segments : [];
+    if (!segs.length && ctx.body.text) segs = parseTranscriptText(String(ctx.body.text), Number(ctx.body.durationSec) || 0);
+    if (!segs.length) throw new ApiError(400, '다시 쓸 대본이 없습니다.');
+    if (segs.length > 2000) throw new ApiError(400, '대본이 너무 깁니다 (최대 2000줄).');
+    const out = await rewriteSegments(segs.map((s, i) => ({ id: s.id || `seg-${i + 1}`, start: Number(s.start) || 0, end: Number(s.end) || 0, text: String(s.text || '') })), { language: String(ctx.body.language || 'ko'), ai: app.ai });
+    return { engine: out.engine, changed: out.changed, segments: out.segments.map((s) => ({ start: s.start, end: s.end, text: s.text, originalText: s.originalText })) };
+  });
   r.get('/api/tools', async () => app.tools.list());
   r.post('/api/tools/:id/run', async (ctx) => app.tools.run(ctx.params.id, ctx.body));
 

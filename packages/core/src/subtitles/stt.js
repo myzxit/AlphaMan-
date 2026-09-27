@@ -120,8 +120,16 @@ export function assertTranscriptAvailable({ source = null, filePath = null, tran
 
 // 유튜브 자막 직접 가져오기 (yt-dlp 없이, 서버리스 포함): InnerTube 로 자막 트랙 목록 → 요청 언어 우선(업로드 자막 > 자동 생성) → timedtext XML/json3 파싱
 // 결과: { engine:'youtube-captions', exact:true, segments, language, kind } 또는 null (자막 없음/실패). ALPHAMAN_YT_CAPTIONS=off 면 건너뜀(테스트)
+const capCache = new Map(); // videoId:lang → { at, value } (10분)
 export async function fetchYoutubeCaptionsDirect(videoId, language = 'ko') {
   if (process.env.ALPHAMAN_YT_CAPTIONS === 'off' || !videoId) return null;
+  const key = `${videoId}:${language}`; const hit = capCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.value;
+  const value = await _fetchYoutubeCaptionsDirect(videoId, language);
+  if (value) capCache.set(key, { at: Date.now(), value });
+  return value;
+}
+async function _fetchYoutubeCaptionsDirect(videoId, language) {
   try {
     const info = await fetchYoutubeInnertube(videoId, { hl: language });
     const tracks = info.captionTracks || [];

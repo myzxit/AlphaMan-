@@ -9,6 +9,7 @@ import { parseYoutubeUrl, parseVideoUrl, fetchYoutubeMeta, probe, validateVideoM
 import { transcribe, semanticSplit, assertTranscriptAvailable, prefetchLinkTranscript } from './subtitles/stt.js';
 import { toASS } from './subtitles/format.js';
 import { hexToAss } from './subtitles/burned.js';
+import { rewriteSegments } from './subtitles/rewrite.js';
 import { TEMPLATES, detectGenre, templateFor } from './shorts/templates.js';
 
 export const REMIX_LIMITS = Object.freeze({ minMinutes: 1, maxMinutes: 28 });
@@ -24,6 +25,7 @@ export const REMIX_DEFAULTS = Object.freeze({
   newSfx: true,                // 새 효과음 큐
   newBgm: true,                // 새 배경음악
   narration: 'none',           // none | intro | full | dub  (dub = 자막 전체를 선택한 목소리로 읽어 원본 목소리를 대체)
+  scriptMode: 'original',       // original = 원본 대본 그대로 | similar = 원본과 거의 비슷하게 다시 쓴 새 대본 (AI 또는 규칙 기반)
   subtitleLook: 'original',    // original = 원본에 박힌 자막과 비슷한 위치·크기·색으로 새 자막을 입힌다 (프레임 분석) | template = 템플릿 스타일
   voiceProfileId: null,        // 내 목소리 프로필 (없으면 voiceId 의 무료 한국어 목소리)
   voiceId: null,               // 무료 목소리 id (없으면 기본 '선희')
@@ -60,6 +62,7 @@ export class RemixEngine {
     if (!['none', 'intro', 'full', 'dub'].includes(opts.narration)) throw new ApiError(400, '내레이션 모드가 올바르지 않습니다.');
     if (!['auto', 'bottom', 'center', 'top'].includes(opts.subtitleRegion)) opts.subtitleRegion = 'auto';
     if (!['original', 'template'].includes(opts.subtitleLook)) opts.subtitleLook = 'original';
+    if (!['original', 'similar'].includes(opts.scriptMode)) opts.scriptMode = 'original';
     if (opts.narration === 'dub') opts.keepOriginalVoice = false; // 더빙은 원본 목소리를 대체한다
     if (!['auto', '16:9', '9:16', '1:1', '4:5'].includes(opts.ratio)) throw new ApiError(400, '지원하지 않는 비율입니다.');
     if (opts.narration !== 'none') this.voice.resolve(userId, opts); // 내 목소리 프로필이 없으면 무료 목소리로 내레이션
@@ -311,6 +314,15 @@ export class RemixEngine {
       }
       subtitles = subtitles.sort((a, b) => a.start - b.start).map((s, i) => ({ ...s, id: `seg-${i + 1}` }));
     }
+    // 대본 다시 쓰기: 원본과 거의 비슷하게 표현만 바꾼 새 대본 (타이밍 유지). 더빙/ASS/미리보기 모두 이 자막을 쓴다
+    let scriptRewrite = null;
+    if (opts.scriptMode === 'similar' && subtitles.some((s) => !s.card)) {
+      const targets = subtitles.filter((s) => !s.card);
+      const rw = await rewriteSegments(targets, { language: opts.language || 'ko', ai: this.ai, tone: styleProfile?.tone ? `${styleProfile.tone} 톤` : '원본과 같은 톤' });
+      const byId = new Map(rw.segments.map((s) => [s.id, s]));
+      subtitles = subtitles.map((s) => (byId.has(s.id) ? { ...s, text: byId.get(s.id).text, originalText: byId.get(s.id).originalText } : s));
+      scriptRewrite = { mode: 'similar', engine: rw.engine, changed: rw.changed, total: targets.length };
+    }
 
     const sfx = [];
     if (opts.newSfx) {
@@ -345,7 +357,7 @@ export class RemixEngine {
       narration = { mode: opts.narration, voiceProfileId: opts.voiceProfileId || null, voice: this.voice.resolve(job.userId, opts), lines: renders, replacesOriginalVoice: ['full', 'dub'].includes(opts.narration) && !opts.keepOriginalVoice, exclusive: opts.narration === 'dub', duckLevel: opts.keepOriginalVoice ? 0.25 : 0, withFile: renders.filter((l) => l.audioPath || l.audioUrl).length };
     }
 
-    return { timeline, template: { id: template.id, name: template.name, font: template.font, position: styleProfile?.subtitlePosition || 'bottom', look: opts.subtitleLook || 'original' }, subtitles, sfx, bgm, zoom, transitions, colorGrade, narration, ratio, extended: plan.extended, stretchFactor: plan.stretchFactor, mirroredFromReference: styleProfile ? styleProfile.mirrored : [] };
+    return { timeline, template: { id: template.id, name: template.name, font: template.font, position: styleProfile?.subtitlePosition || 'bottom', look: opts.subtitleLook || 'original' }, subtitles, scriptRewrite, sfx, bgm, zoom, transitions, colorGrade, narration, ratio, extended: plan.extended, stretchFactor: plan.stretchFactor, mirroredFromReference: styleProfile ? styleProfile.mirrored : [] };
   }
 
   async writeNarration({ plan, subtitles, mode, tone }) {
